@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="de"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bauplaner</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#1b1f24;--mut:#6b7280;--ac:#c2410c;--ok:#15803d;--bad:#b91c1c;--bd:#e5e7eb}
+@media(prefers-color-scheme:dark){:root{--bg:#111418;--card:#1c2128;--tx:#e6e8eb;--mut:#9aa3ad;--bd:#2d333b}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+nav{display:flex;position:sticky;top:0;background:var(--card);border-bottom:1px solid var(--bd);z-index:5}
+nav button{flex:1;padding:14px 4px;border:0;background:none;color:var(--mut);font-size:15px;border-bottom:3px solid transparent}
+nav button.on{color:var(--ac);border-color:var(--ac);font-weight:600}
+main{max-width:900px;margin:0 auto;padding:12px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.chip{padding:7px 12px;border-radius:99px;border:1px solid var(--bd);background:var(--card);color:var(--tx);font-size:14px}
+.chip.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin-bottom:10px}
+.row{display:flex;gap:10px;align-items:flex-start}
+.grow{flex:1;min-width:0}
+h3{margin:0 0 4px;font-size:17px}
+.mut{color:var(--mut);font-size:13px}
+.tag{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;margin:2px 4px 2px 0;background:var(--bd)}
+.tag.ok{background:#15803d22;color:var(--ok)}.tag.bad{background:#b91c1c22;color:var(--bad)}.tag.ac{background:#c2410c22;color:var(--ac)}
+button.btn{border:0;border-radius:8px;padding:10px 14px;background:var(--ac);color:#fff;font-size:15px}
+button.sec{background:var(--bd);color:var(--tx)}
+button.dng{background:var(--bad)}
+.chk{width:30px;height:30px;flex:none;accent-color:var(--ok)}
+input,textarea,select{width:100%;padding:10px;font-size:16px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font-family:inherit}
+input[type=checkbox]{width:auto}
+textarea{min-height:90px}
+label{display:block;margin:10px 0 4px;font-weight:600;font-size:14px}
+.modal{position:fixed;inset:0;background:#0008;display:none;z-index:10;overflow:auto}
+.modal.on{display:block}
+.box{background:var(--card);max-width:700px;margin:16px auto;border-radius:12px;padding:14px}
+.pick{max-height:220px;overflow:auto;border:1px solid var(--bd);border-radius:8px;padding:6px}
+.pick label{font-weight:400;margin:0;padding:6px 4px;display:flex;gap:8px;align-items:center}
+.prow{display:flex;gap:8px;align-items:center;padding:4px 0}
+.prow .nm{flex:1;min-width:0;font-size:15px}
+.prow input[type=number]{width:80px;padding:6px}
+.neg{color:var(--bad);font-weight:700}
+.pos{color:var(--ok);font-weight:700}
+.stk{width:90px;padding:6px}
+pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit;margin:6px 0}
+a{color:var(--ac)}
+.sec2{margin-top:10px;font-weight:600;font-size:14px}
+#auth{max-width:380px;margin:60px auto;padding:16px}
+#app{display:none}
+</style></head><body>
+
+<div id="auth"></div>
+
+<div id="app">
+<nav>
+ <button id="t-tasks" onclick="tab('tasks')">Aufgaben</button>
+ <button id="t-docs" onclick="tab('docs')">Anleitungen</button>
+ <button id="t-stock" onclick="tab('stock')">Lager</button>
+ <button id="t-me" onclick="tab('me')">Konto</button>
+</nav>
+<main id="main"></main>
+</div>
+
+<div class="modal" id="m-task"><div class="box" id="b-task"></div></div>
+<div class="modal" id="m-doc"><div class="box" id="b-doc"></div></div>
+<div class="modal" id="m-item"><div class="box" id="b-item"></div></div>
+<div class="modal" id="m-view"><div class="box" id="b-view"></div></div>
+
+<script>
+// ===== Supabase-Zugang =====
+const SUPABASE_URL = "https://apaqbpltynnrcyhzovay.supabase.co";
+const SUPABASE_KEY = "sb_publishable_w59liY7wLY_aQJN-1CJxEA_b7Gzr5DU";
+// ===========================
+
+const HASH = location.hash;
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const BUCKET = "anleitungen";
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const byId = (arr, id) => arr.find(x => x.id === id);
+const today = () => new Date().toLocaleDateString("sv-SE");
+const fmt = n => String(Math.round(Number(n) * 100) / 100);
+const ikey = (kind, n, u) => kind + "|" + (n || "").trim().toLowerCase() + "|" + (u || "").trim().toLowerCase();
+function chkErr(res) { if (res.error) { alert("Fehler: " + res.error.message); throw res.error; } return res.data; }
+
+let D = {tasks: [], docs: [], items: []}, T = "tasks", F = "ready", CAT = "", SF = "all", USER = null, timer = null;
+let ED = {sel: {}, add: []};
+
+/* ---------- Anmeldung ---------- */
+function showLogin() {
+  $("app").style.display = "none"; $("auth").style.display = "block";
+  $("auth").innerHTML = `<h3>🏗 Bauplaner</h3><p class="mut">Nur für eingeladene Mitglieder.</p>
+  <label>E-Mail</label><input id="a-mail" type="email" autocomplete="username">
+  <label>Passwort</label><input id="a-pw" type="password" autocomplete="current-password">
+  <div class="bar" style="margin-top:14px"><button class="btn" onclick="doLogin()">Anmelden</button></div>`;
+}
+async function doLogin() {
+  const r = await sb.auth.signInWithPassword({email: $("a-mail").value.trim(), password: $("a-pw").value});
+  if (r.error) { alert("Anmeldung fehlgeschlagen: " + r.error.message); return; }
+  start();
+}
+function showSetPassword() {
+  $("app").style.display = "none"; $("auth").style.display = "block";
+  $("auth").innerHTML = `<h3>Passwort festlegen</h3>
+  <label>Neues Passwort (mind. 8 Zeichen)</label><input id="a-pw" type="password" autocomplete="new-password">
+  <div class="bar" style="margin-top:14px"><button class="btn" onclick="doSetPw()">Speichern</button></div>`;
+}
+async function doSetPw() {
+  const r = await sb.auth.updateUser({password: $("a-pw").value});
+  if (r.error) { alert(r.error.message); return; }
+  history.replaceState(null, "", location.pathname + location.search);
+  start();
+}
+async function logout() { await sb.auth.signOut(); clearInterval(timer); showLogin(); }
+async function start() {
+  const {data} = await sb.auth.getSession();
+  if (!data.session) { showLogin(); return; }
+  USER = data.session.user;
+  $("auth").style.display = "none"; $("app").style.display = "block";
+  await load();
+  clearInterval(timer);
+  timer = setInterval(() => { if (!document.querySelector(".modal.on")) load(); }, 15000);
+}
+async function init() {
+  if (HASH.includes("type=invite") || HASH.includes("type=recovery")) {
+    const {data} = await sb.auth.getSession();
+    if (data.session) { showSetPassword(); return; }
+  }
+  start();
+}
+
+/* ---------- Daten laden und berechnen ---------- */
+async function load() {
+  const [t, it, ti, d, td, dp] = await Promise.all([
+    sb.from("tasks").select("*").order("id"), sb.from("items").select("*").order("name"),
+    sb.from("task_items").select("*"), sb.from("docs").select("*").order("title"),
+    sb.from("task_docs").select("*"), sb.from("deps").select("*")]);
+  const tasks = chkErr(t), items = chkErr(it), tis = chkErr(ti), docs = chkErr(d), tdocs = chkErr(td), deps = chkErr(dp);
+  const byid = {}; tasks.forEach(x => byid[x.id] = x);
+  const iid = {}; items.forEach(i => { i.stock = Number(i.stock); i.demand = 0; iid[i.id] = i; });
+  const sat = x => x.done || (x.interval_days && x.last_done);
+  for (const x of tasks) {
+    x.req = tis.filter(q => q.task_id === x.id).map(q => ({row: q.id, item: iid[q.item_id], qty: Number(q.qty)})).filter(r => r.item);
+    x.doc_ids = tdocs.filter(q => q.task_id === x.id).map(q => q.doc_id);
+    x.dep_ids = deps.filter(q => q.task_id === x.id).map(q => q.depends_on);
+    x.blocked_by = x.dep_ids.filter(i => byid[i] && !sat(byid[i]));
+    x.missing = x.req.filter(r => r.item.stock < r.qty).map(r => r.item.name);
+    x.ready = !x.done && x.blocked_by.length === 0 && x.missing.length === 0;
+    x.due = !!(x.interval_days && (!x.next_due || x.next_due <= today()));
+    if (!x.done) x.req.forEach(r => r.item.demand += r.qty);
+  }
+  items.forEach(i => i.saldo = i.stock - i.demand);
+  for (const q of docs) q.task_ids = tdocs.filter(r => r.doc_id === q.id).map(r => r.task_id);
+  D = {tasks, docs, items};
+  render();
+}
+function tab(t) { T = t; render(); }
+function render() {
+  for (const k of ["tasks","docs","stock","me"]) $("t-" + k).className = T === k ? "on" : "";
+  if (T === "tasks") renderTasks(); else if (T === "docs") renderDocs(); else if (T === "stock") renderStock(); else renderMe();
+}
+const FILTERS = [["ready","Jetzt machbar"],["missing","Material/Werkzeug fehlt"],["due","Fällig (wiederkehrend)"],["blocked","Blockiert"],["done","Erledigt"],["all","Alle"]];
+function matchF(t) {
+  switch (F) {
+    case "ready": return t.ready && (!t.interval_days || t.due);
+    case "missing": return !t.done && t.blocked_by.length === 0 && t.missing.length > 0;
+    case "due": return t.interval_days && t.due && t.ready;
+    case "blocked": return !t.done && t.blocked_by.length > 0;
+    case "done": return t.done || (t.interval_days && !t.due);
+    default: return true; }
+}
+function renderTasks() {
+  const cats = [...new Set(D.tasks.map(t => t.category).filter(Boolean))].sort();
+  let h = `<div class="bar">${FILTERS.map(([k,n]) => `<button class="chip ${F===k?'on':''}" onclick="F='${k}';render()">${n} (${D.tasks.filter(t => {const o=F;F=k;const r=matchF(t);F=o;return r}).length})</button>`).join("")}</div>`;
+  if (cats.length) h += `<div class="bar"><select onchange="CAT=this.value;render()"><option value="">Alle Kategorien</option>${cats.map(c => `<option ${CAT===c?'selected':''}>${esc(c)}</option>`).join("")}</select></div>`;
+  h += `<div class="bar"><button class="btn" onclick="editTask()">+ Neue Aufgabe</button></div>`;
+  const list = D.tasks.filter(t => matchF(t) && (!CAT || t.category === CAT));
+  if (!list.length) h += `<p class="mut">Keine Aufgaben in dieser Ansicht.</p>`;
+  for (const t of list) {
+    const blocked = t.blocked_by.map(i => byId(D.tasks, i)?.title).filter(Boolean);
+    h += `<div class="card"><div class="row">
+      <input type="checkbox" class="chk" ${t.done?'checked':''} ${(!t.done&&!t.ready)?'disabled':''} onchange="chk(${t.id},this.checked)">
+      <div class="grow" onclick="viewTask(${t.id})"><h3>${esc(t.title)}</h3>
+      ${t.category?`<span class="tag">${esc(t.category)}</span>`:""}
+      ${t.interval_days?`<span class="tag ac">alle ${t.interval_days} Tage${t.next_due?' · nächste: '+t.next_due:''}</span>`:""}
+      ${t.done?`<span class="tag ok">erledigt ${t.done_date||''}</span>`:t.ready?`<span class="tag ok">machbar</span>`:""}
+      ${(!t.done&&t.blocked_by.length)?`<span class="tag bad">wartet auf: ${blocked.map(esc).join(", ")}</span>`:""}
+      ${(!t.done&&t.missing.length)?`<span class="tag bad">fehlt: ${t.missing.map(esc).join(", ")}</span>`:""}
+      ${t.doc_ids.length?`<span class="tag">📄 ${t.doc_ids.length}</span>`:""}
+      </div></div></div>`;
+  }
+  $("main").innerHTML = h;
+}
+async function chk(id, on) {
+  if (on) chkErr(await sb.rpc("complete_task", {p_id: id, p_date: today()}));
+  else chkErr(await sb.rpc("uncomplete_task", {p_id: id}));
+  load();
+}
+
+/* ---------- Ansicht Aufgabe / Anleitung ---------- */
+function viewTask(id) {
+  const t = byId(D.tasks, id);
+  const deps = t.dep_ids.map(i => byId(D.tasks, i)).filter(Boolean);
+  const after = D.tasks.filter(x => x.dep_ids.includes(id));
+  let h = `<h3>${esc(t.title)}</h3><div class="mut">${esc(t.category)}${t.interval_days?` · wiederkehrend alle ${t.interval_days} Tage, letzte: ${t.last_done||'nie'}`:''}</div>`;
+  if (t.description) h += `<div class="sec2">Beschreibung</div><pre>${esc(t.description)}</pre>`;
+  if (deps.length) h += `<div class="sec2">Voraussetzungen</div>${deps.map(d => `<div>${(d.done||(d.interval_days&&d.last_done))?'✅':'⏳'} ${esc(d.title)}</div>`).join("")}`;
+  if (after.length) h += `<div class="sec2">Danach möglich</div>${after.map(d => `<div>→ ${esc(d.title)}</div>`).join("")}`;
+  const mats = t.req.filter(r => r.item.kind === "material"), tls = t.req.filter(r => r.item.kind === "tool");
+  const line = r => `<div>${r.item.stock >= r.qty ? '✅' : '❌'} ${r.item.kind==='tool'?'🔧 ':''}${fmt(r.qty)} ${esc(r.item.unit)} ${esc(r.item.name)} <span class="mut">(Bestand ${fmt(r.item.stock)})</span></div>`;
+  if (mats.length) h += `<div class="sec2">Material</div>${mats.map(line).join("")}`;
+  if (tls.length) h += `<div class="sec2">Werkzeug</div>${tls.map(line).join("")}`;
+  if (t.doc_ids.length) h += `<div class="sec2">Anleitungen</div>${t.doc_ids.map(i => byId(D.docs, i)).filter(Boolean).map(d => `<div><a href="#" onclick="viewDoc(${d.id});return false">📄 ${esc(d.title)}</a></div>`).join("")}`;
+  h += `<div class="bar" style="margin-top:14px"><button class="btn" onclick="editTask(${id})">Bearbeiten</button><button class="btn sec" onclick="closeM('view')">Schließen</button></div>`;
+  $("b-view").innerHTML = h; $("m-view").className = "modal on";
+}
+function viewDoc(id) {
+  const d = byId(D.docs, id);
+  let h = `<h3>📄 ${esc(d.title)}</h3>`;
+  if (d.file_path) h += `<p><a href="#" onclick="openFile(${d.id});return false">Datei öffnen: ${esc(d.file_name)}</a></p>`;
+  h += `<pre>${esc(d.content)}</pre>`;
+  const used = d.task_ids.map(i => byId(D.tasks, i)).filter(Boolean);
+  if (used.length) h += `<div class="sec2">Verwendet bei</div>${used.map(t => `<div>• ${esc(t.title)}</div>`).join("")}`;
+  h += `<div class="bar" style="margin-top:14px"><button class="btn sec" onclick="closeM('view')">Schließen</button></div>`;
+  $("b-view").innerHTML = h; $("m-view").className = "modal on";
+}
+function closeM(n) { $("m-" + n).className = "modal"; }
+async function openFile(id) {
+  const d = byId(D.docs, id);
+  const w = window.open("", "_blank");
+  const r = await sb.storage.from(BUCKET).createSignedUrl(d.file_path, 3600);
+  if (r.error) { if (w) w.close(); alert(r.error.message); return; }
+  if (w) w.location = r.data.signedUrl; else location.href = r.data.signedUrl;
+}
+
+/* ---------- Aufgabe bearbeiten ---------- */
+function editTask(id) {
+  const t = id ? byId(D.tasks, id) : {title:"",category:"",description:"",interval_days:"",req:[],doc_ids:[],dep_ids:[]};
+  closeM("view");
+  ED = {sel: {}, add: []};
+  t.req.forEach(r => ED.sel[r.item.id] = r.qty);
+  $("b-task").innerHTML = `<h3>${id?'Aufgabe bearbeiten':'Neue Aufgabe'}</h3>
+  <label>Titel</label><input id="f-title" value="${esc(t.title)}">
+  <label>Kategorie (z. B. Rohbau, Garten, Elektro)</label><input id="f-cat" value="${esc(t.category)}">
+  <label>Beschreibung</label><textarea id="f-desc">${esc(t.description)}</textarea>
+  <label>Wiederholung alle X Tage (leer = einmalig)</label><input id="f-int" type="number" min="1" value="${t.interval_days||''}">
+  <label>Material und Werkzeug aus dem Lager wählen</label><div id="picker"></div>
+  <label>Anleitungen zuweisen</label><div class="pick">${D.docs.map(d => `<label><input type="checkbox" name="fd" value="${d.id}" ${t.doc_ids.includes(d.id)?'checked':''}>${esc(d.title)}</label>`).join("")||'<span class="mut">Noch keine Anleitungen angelegt</span>'}</div>
+  <label>Voraussetzung: erst nach diesen Aufgaben</label><div class="pick">${D.tasks.filter(x => x.id !== id).map(x => `<label><input type="checkbox" name="fp" value="${x.id}" ${t.dep_ids.includes(x.id)?'checked':''}>${esc(x.title)}</label>`).join("")||'<span class="mut">Keine anderen Aufgaben</span>'}</div>
+  <div class="bar" style="margin-top:14px"><button class="btn" onclick="saveTask(${id||0})">Speichern</button>
+  <button class="btn sec" onclick="closeM('task')">Abbrechen</button>
+  ${id?`<button class="btn dng" onclick="delTask(${id})">Löschen</button>`:''}</div>`;
+  renderPicker();
+  $("m-task").className = "modal on";
+}
+function renderPicker() {
+  const items = [...D.items].sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  let h = `<div class="pick">${items.map(i => `<div class="prow"><input type="checkbox" ${ED.sel[i.id]!==undefined?'checked':''} onchange="togSel(${i.id},this.checked)">
+    <span class="nm">${i.kind==='tool'?'🔧 ':''}${esc(i.name)} ${i.unit?'('+esc(i.unit)+')':''} <span class="mut">Bestand ${fmt(i.stock)}</span></span>
+    ${ED.sel[i.id]!==undefined?`<input type="number" step="any" min="0" value="${ED.sel[i.id]}" oninput="setQty(${i.id},this.value)">`:''}</div>`).join("") || '<span class="mut">Lager ist noch leer. Neue Artikel unten hinzufügen.</span>'}</div>`;
+  if (ED.add.length) h += `<div class="sec2">Neu (Bestand 0, im Lager dann im Minus)</div>` + ED.add.map((a, n) => `<div class="prow"><span class="nm">${a.kind==='tool'?'🔧 ':''}${fmt(a.qty)} ${esc(a.unit)} ${esc(a.name)}</span><button class="btn sec" onclick="rmAdd(${n})">✕</button></div>`).join("");
+  h += `<div class="sec2">Neuen Artikel hinzufügen</div>
+  <div class="bar"><select id="n-kind" style="width:130px"><option value="material">Material</option><option value="tool">Werkzeug</option></select>
+  <input id="n-name" placeholder="Name" style="flex:1;min-width:120px">
+  <input id="n-unit" placeholder="Einheit (Sack, m, Stk)" style="width:130px">
+  <input id="n-qty" type="number" step="any" min="0" value="1" style="width:80px">
+  <button class="btn" onclick="addNew()">+</button></div>`;
+  $("picker").innerHTML = h;
+}
+function togSel(id, on) { if (on) ED.sel[id] = 1; else delete ED.sel[id]; renderPicker(); }
+function setQty(id, v) { ED.sel[id] = parseFloat(String(v).replace(",", ".")) || 0; }
+function rmAdd(n) { ED.add.splice(n, 1); renderPicker(); }
+function addNew() {
+  const kind = $("n-kind").value, name = $("n-name").value.trim(), unit = $("n-unit").value.trim();
+  const qty = parseFloat($("n-qty").value.replace(",", ".")) || 1;
+  if (!name) { alert("Name fehlt"); return; }
+  const ex = D.items.find(i => ikey(i.kind, i.name, i.unit) === ikey(kind, name, unit));
+  if (ex) ED.sel[ex.id] = qty; else ED.add.push({kind, name, unit, qty});
+  renderPicker();
+}
+function reaches(from, target, seen = new Set()) {
+  if (from === target) return true;
+  if (seen.has(from)) return false;
+  seen.add(from);
+  const t = byId(D.tasks, from);
+  return !!t && t.dep_ids.some(d => reaches(d, target, seen));
+}
+async function saveTask(id) {
+  const title = $("f-title").value.trim(); if (!title) { alert("Titel fehlt"); return; }
+  const docIds = [...document.querySelectorAll("input[name=fd]:checked")].map(e => +e.value);
+  const depIds = [...document.querySelectorAll("input[name=fp]:checked")].map(e => +e.value);
+  if (id && depIds.some(d => d === id || reaches(d, id))) { alert("Zirkuläre Abhängigkeit: eine Aufgabe würde indirekt auf sich selbst warten."); return; }
+  const row = {title, category: $("f-cat").value.trim(), description: $("f-desc").value, interval_days: parseInt($("f-int").value) || null};
+  let tid = id;
+  if (id) chkErr(await sb.from("tasks").update(row).eq("id", id));
+  else tid = chkErr(await sb.from("tasks").insert(row).select().single()).id;
+  const sel = {...ED.sel};
+  for (const a of ED.add) {
+    const it = chkErr(await sb.from("items").insert({kind: a.kind, name: a.name, unit: a.unit, stock: 0}).select().single());
+    sel[it.id] = a.qty;
+  }
+  for (const tbl of ["task_items", "task_docs", "deps"]) chkErr(await sb.from(tbl).delete().eq("task_id", tid));
+  const tiRows = Object.entries(sel).map(([item_id, qty]) => ({task_id: tid, item_id: +item_id, qty}));
+  if (tiRows.length) chkErr(await sb.from("task_items").insert(tiRows));
+  if (docIds.length) chkErr(await sb.from("task_docs").insert(docIds.map(doc_id => ({task_id: tid, doc_id}))));
+  if (depIds.length) chkErr(await sb.from("deps").insert(depIds.map(depends_on => ({task_id: tid, depends_on}))));
+  closeM("task"); load();
+}
+async function delTask(id) { if (!confirm("Aufgabe wirklich löschen?")) return; chkErr(await sb.from("tasks").delete().eq("id", id)); closeM("task"); load(); }
+
+/* ---------- Lager ---------- */
+function renderStock() {
+  let h = `<div class="bar"><button class="btn" onclick="editItem()">+ Neuer Artikel</button>
+    <button class="chip ${SF==='all'?'on':''}" onclick="SF='all';render()">Alle</button>
+    <button class="chip ${SF==='miss'?'on':''}" onclick="SF='miss';render()">Nur Fehlendes</button></div>
+    <p class="mut">Bestand = was du hast. Bedarf = Summe der offenen Aufgaben. Saldo = Bestand minus Bedarf (rot und negativ = fehlt). Beim Abschließen einer Aufgabe wird Material vom Bestand abgezogen, Werkzeug nicht.</p>`;
+  const block = (kind, title) => {
+    const list = D.items.filter(i => i.kind === kind && (SF === 'all' || i.saldo < 0));
+    let s = `<h3>${title}</h3>`;
+    if (!list.length) return s + `<p class="mut">${SF==='miss'?'Nichts fehlt.':'Noch nichts angelegt.'}</p>`;
+    return s + list.map(i => `<div class="card"><div class="row"><div class="grow"><b>${kind==='tool'?'🔧 ':''}${esc(i.name)}</b> ${i.unit?`<span class="mut">(${esc(i.unit)})</span>`:''}
+      <div style="margin-top:6px" class="bar"><span>Bestand</span><input class="stk" type="number" step="any" value="${fmt(i.stock)}" onchange="setStock(${i.id},this.value)">
+      <span class="mut">Bedarf ${fmt(i.demand)}</span>
+      <span class="${i.saldo<0?'neg':'pos'}">Saldo ${fmt(i.saldo)}</span></div></div>
+      <div>${i.saldo<0?`<button class="btn" onclick="bought(${i.id})">✓ gekauft</button> `:''}<button class="btn sec" onclick="editItem(${i.id})">✎</button></div></div></div>`).join("");
+  };
+  h += block("material", "Material") + block("tool", "Werkzeug");
+  $("main").innerHTML = h;
+}
+async function setStock(id, v) {
+  const n = parseFloat(String(v).replace(",", "."));
+  if (isNaN(n)) { load(); return; }
+  chkErr(await sb.from("items").update({stock: n}).eq("id", id)); load();
+}
+async function bought(id) {
+  const i = byId(D.items, id);
+  chkErr(await sb.from("items").update({stock: i.stock - i.saldo}).eq("id", id)); load();
+}
+function editItem(id) {
+  const i = id ? byId(D.items, id) : {kind: "material", name: "", unit: "", stock: 0};
+  $("b-item").innerHTML = `<h3>${id?'Artikel bearbeiten':'Neuer Artikel'}</h3>
+  <label>Art</label><select id="i-kind"><option value="material" ${i.kind==='material'?'selected':''}>Material</option><option value="tool" ${i.kind==='tool'?'selected':''}>Werkzeug</option></select>
+  <label>Name</label><input id="i-name" value="${esc(i.name)}">
+  <label>Einheit (z. B. Sack, m, Stk)</label><input id="i-unit" value="${esc(i.unit)}">
+  <label>Bestand (vorhandene Menge)</label><input id="i-stock" type="number" step="any" value="${fmt(i.stock)}">
+  <div class="bar" style="margin-top:14px"><button class="btn" onclick="saveItem(${id||0})">Speichern</button>
+  <button class="btn sec" onclick="closeM('item')">Abbrechen</button>
+  ${id?`<button class="btn dng" onclick="delItem(${id})">Löschen</button>`:''}</div>`;
+  $("m-item").className = "modal on";
+}
+async function saveItem(id) {
+  const name = $("i-name").value.trim(); if (!name) { alert("Name fehlt"); return; }
+  const row = {kind: $("i-kind").value, name, unit: $("i-unit").value.trim(), stock: parseFloat($("i-stock").value.replace(",", ".")) || 0};
+  if (id) chkErr(await sb.from("items").update(row).eq("id", id)); else chkErr(await sb.from("items").insert(row));
+  closeM("item"); load();
+}
+async function delItem(id) {
+  if (!confirm("Artikel löschen? Er wird auch aus allen Aufgaben entfernt.")) return;
+  chkErr(await sb.from("items").delete().eq("id", id)); closeM("item"); load();
+}
+
+/* ---------- Anleitungen ---------- */
+function renderDocs() {
+  let h = `<div class="bar"><button class="btn" onclick="editDoc()">+ Neue Anleitung</button></div>`;
+  if (!D.docs.length) h += `<p class="mut">Noch keine Anleitungen. Lege z. B. „Beton anmischen“ an und weise sie Aufgaben zu.</p>`;
+  for (const d of D.docs) h += `<div class="card"><div class="row"><div class="grow" onclick="viewDoc(${d.id})"><h3>📄 ${esc(d.title)}</h3>
+    <span class="tag">${d.task_ids.length} Aufgabe(n)</span>${d.file_name?`<span class="tag">📎 ${esc(d.file_name)}</span>`:''}</div>
+    <button class="btn sec" onclick="editDoc(${d.id})">✎</button></div></div>`;
+  $("main").innerHTML = h;
+}
+function editDoc(id) {
+  const d = id ? byId(D.docs, id) : {title:"", content:"", file_name:""};
+  $("b-doc").innerHTML = `<h3>${id?'Anleitung bearbeiten':'Neue Anleitung'}</h3>
+  <label>Titel</label><input id="d-title" value="${esc(d.title)}">
+  <label>Text / Notizen</label><textarea id="d-content" style="min-height:220px">${esc(d.content)}</textarea>
+  <label>Datei anhängen (PDF, Bild, ...) ${d.file_name?'– aktuell: '+esc(d.file_name):''}</label><input id="d-file" type="file">
+  <div class="bar" style="margin-top:14px"><button class="btn" onclick="saveDoc(${id||0})">Speichern</button>
+  <button class="btn sec" onclick="closeM('doc')">Abbrechen</button>
+  ${id?`<button class="btn dng" onclick="delDoc(${id})">Löschen</button>`:''}</div>`;
+  $("m-doc").className = "modal on";
+}
+async function saveDoc(id) {
+  const title = $("d-title").value.trim(); if (!title) { alert("Titel fehlt"); return; }
+  const row = {title, content: $("d-content").value};
+  const file = $("d-file").files[0];
+  const old = id ? byId(D.docs, id) : null;
+  if (file) {
+    const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_");
+    const path = crypto.randomUUID() + "-" + safe;
+    chkErr(await sb.storage.from(BUCKET).upload(path, file));
+    row.file_path = path; row.file_name = file.name;
+    if (old && old.file_path) await sb.storage.from(BUCKET).remove([old.file_path]);
+  }
+  if (id) chkErr(await sb.from("docs").update(row).eq("id", id));
+  else chkErr(await sb.from("docs").insert(row));
+  closeM("doc"); load();
+}
+async function delDoc(id) {
+  if (!confirm("Anleitung löschen? Die Zuweisungen entfallen.")) return;
+  const d = byId(D.docs, id);
+  if (d.file_path) await sb.storage.from(BUCKET).remove([d.file_path]);
+  chkErr(await sb.from("docs").delete().eq("id", id)); closeM("doc"); load();
+}
+
+function renderMe() {
+  $("main").innerHTML = `<div class="card"><h3>Angemeldet als</h3><p>${esc(USER?.email)}</p>
+  <div class="bar"><button class="btn sec" onclick="logout()">Abmelden</button></div>
+  <p class="mut">Mitglieder einladen oder entfernen: im Supabase-Dashboard unter Authentication > Users.</p></div>`;
+}
+sb.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT") { clearInterval(timer); showLogin(); } });
+init();
+</script></body></html>
