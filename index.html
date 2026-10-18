@@ -65,6 +65,8 @@ a{color:var(--ac)}
 <div class="modal" id="m-doc"><div class="box" id="b-doc"></div></div>
 <div class="modal" id="m-item"><div class="box" id="b-item"></div></div>
 <div class="modal" id="m-view"><div class="box" id="b-view"></div></div>
+<div class="modal" id="m-prompt"><div class="box" id="b-prompt"></div></div>
+<div class="modal" id="m-pset"><div class="box" id="b-pset"></div></div>
 
 <script>
 // ===== Supabase-Zugang =====
@@ -130,6 +132,7 @@ async function start() {
   USER = data.session.user;
   $("auth").style.display = "none"; $("app").style.display = "block";
   await load();
+  loadPromptCfg();
   clearInterval(timer);
   timer = setInterval(() => { if (!document.querySelector(".modal.on") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || "")) load(); }, 15000);
 }
@@ -223,7 +226,7 @@ function viewTask(id) {
   if (mats.length) h += `<div class="sec2">Material</div>${mats.map(line).join("")}`;
   if (tls.length) h += `<div class="sec2">Werkzeug</div>${tls.map(line).join("")}`;
   if (t.doc_ids.length) h += `<div class="sec2">Anleitungen</div>${t.doc_ids.map(i => byId(D.docs, i)).filter(Boolean).map(d => `<div><a href="#" onclick="viewDoc(${d.id});return false">📄 ${esc(d.title)}</a></div>`).join("")}`;
-  h += `<div class="bar" style="margin-top:14px"><button class="btn" onclick="editTask(${id})">Bearbeiten</button><button class="btn sec" onclick="closeM('view')">Schließen</button></div>`;
+  h += `<div class="bar" style="margin-top:14px"><button class="btn" onclick="editTask(${id})">Bearbeiten</button><button class="btn sec" onclick="openPrompt(${id},false)">🤖 KI-Prompt</button><button class="btn sec" onclick="closeM('view')">Schließen</button></div>`;
   $("b-view").innerHTML = h; $("m-view").className = "modal on";
 }
 function viewDoc(id) {
@@ -260,6 +263,7 @@ function editTask(id) {
   <label>Anleitungen zuweisen</label><div class="pick">${D.docs.map(d => `<label><input type="checkbox" name="fd" value="${d.id}" ${t.doc_ids.includes(d.id)?'checked':''}>${esc(d.title)}</label>`).join("")||'<span class="mut">Noch keine Anleitungen angelegt</span>'}</div>
   <label>Voraussetzung: erst nach diesen Aufgaben</label><div class="pick">${D.tasks.filter(x => x.id !== id).map(x => `<label><input type="checkbox" name="fp" value="${x.id}" ${t.dep_ids.includes(x.id)?'checked':''}>${esc(x.title)}</label>`).join("")||'<span class="mut">Keine anderen Aufgaben</span>'}</div>
   <div class="bar" style="margin-top:14px"><button class="btn" onclick="saveTask(${id||0})">Speichern</button>
+  <button class="btn sec" onclick="openPrompt(${id||0},true)">🤖 KI-Prompt</button>
   <button class="btn sec" onclick="closeM('task')">Abbrechen</button>
   ${id?`<button class="btn dng" onclick="delTask(${id})">Löschen</button>`:''}</div>`;
   renderPicker();
@@ -429,6 +433,9 @@ function renderMe() {
   $("main").innerHTML = `<div class="card"><h3>Angemeldet als</h3><p>${esc(USER?.email)}</p>
   <div class="bar"><button class="btn sec" onclick="logout()">Abmelden</button></div>
   <p class="mut">Mitglieder einladen oder entfernen: im Supabase-Dashboard unter Authentication > Users.</p></div>
+  <div class="card"><h3>KI-Prompt</h3>
+  <p class="mut">Die Vorlagen, aus denen der Bauplaner den Prompt für die KI baut. Änderungen gelten sofort, die Datei muss nicht angepasst werden.</p>
+  <div class="bar"><button class="btn" onclick="editPromptCfg()">Prompt-Vorlagen bearbeiten</button></div></div>
   <div class="card"><h3>Backup</h3>
   <p class="mut">Speichert Aufgaben, Lager, Anleitungstexte und Zuordnungen als Datei. Angehängte Dateien (PDF, Bilder) sind nicht enthalten.</p>
   <div class="bar"><button class="btn" onclick="exportBackup()">Backup herunterladen</button></div>
@@ -474,6 +481,178 @@ async function importBackup(file) {
   await insRows("deps", b.deps.filter(r => tm[r.task_id] && tm[r.depends_on]).map(r => ({task_id: tm[r.task_id], depends_on: tm[r.depends_on]})));
   alert("Backup eingespielt.");
   load();
+}
+
+/* ---------- KI-Prompt ---------- */
+const DEF_NEW = `Du bist ein erfahrener Bauleiter und Handwerksmeister in Deutschland. Ich plane Arbeiten an meinem Haus und trage sie in meine Planungs-App ein. Erstelle aus meiner Beschreibung einen Eintrag für diese App.
+
+REGELN
+- Antworte auf Deutsch, in genau dem Format unten, ohne Einleitung und ohne Schlusswort.
+- Nenne nur Material und Werkzeug, das für diese eine Aufgabe wirklich nötig ist.
+- Verwende für Material und Werkzeug NUR die Namen aus meinen Listen unten, exakt in dieser Schreibweise und mit der angegebenen Einheit.
+- Fehlt ein Artikel in der Liste, aber ein vorhandener kann ihn sinnvoll ersetzen (zum Beispiel Anschlagwinkel statt Zimmermannswinkel), nimm den vorhandenen und schreibe unter HINWEISE, was du ersetzt hast.
+- Nur wenn nichts passt: nenne einen neuen kurzen Namen ohne Marke und setze (NEU) dahinter.
+- Material: konkrete Menge mit Einheit, aus meinen Maßen gerechnet, plus 5 bis 10 % Verschnitt wo üblich.
+- Werkzeug: Anzahl angeben, meist 1, weil ich Aufgaben nacheinander erledige.
+- Beschreibung: 5 bis 10 nummerierte Arbeitsschritte in sinnvoller Reihenfolge, mit wichtigen Trocknungs- und Wartezeiten.
+- Fehlt eine wichtige Angabe, rechne mit einer Annahme (unter HINWEISE nennen) und stelle die Frage unter FRAGEN.
+- Warne unter HINWEISE bei Gefahr (Strom, Gas, Statik, Absturz) und wenn ein Fachbetrieb oder eine Genehmigung nötig ist.
+
+FORMAT
+TITEL: (kurz, maximal 60 Zeichen)
+KATEGORIE: (ein Wort)
+WIEDERHOLUNG: (Anzahl Tage oder einmalig)
+
+MATERIAL:
+- Menge Einheit Artikelname
+
+WERKZEUG:
+- Anzahl Stk Werkzeugname
+
+BESCHREIBUNG:
+1. ...
+
+HINWEISE:
+- ...
+
+FRAGEN:
+- ...
+
+MEIN LAGER, MATERIAL (Name [Einheit]):
+{{LAGER_MATERIAL}}
+
+MEIN LAGER, WERKZEUG:
+{{LAGER_WERKZEUG}}
+
+AUFGABE UND DETAILS:
+Titel: {{TITEL}}
+Kategorie: {{KATEGORIE}}
+Wiederholung: {{WIEDERHOLUNG}}
+Details: {{BESCHREIBUNG}}
+Zusatz: {{ZUSATZ}}`;
+const DEF_REV = `Du bist ein erfahrener Bauleiter und Handwerksmeister in Deutschland. Ich habe in meiner Planungs-App bereits eine Aufgabe angelegt. Prüfe sie und überarbeite sie.
+
+REGELN
+- Antworte auf Deutsch, in genau dem Format unten, ohne Einleitung und ohne Schlusswort.
+- Prüfe Vollständigkeit, Reihenfolge der Schritte, Mengen und die Wahl von Material und Werkzeug. Korrigiere Fehler und ergänze Fehlendes. Entferne Überflüssiges.
+- Verwende für Material und Werkzeug NUR die Namen aus meinen Listen unten, exakt in dieser Schreibweise und mit der angegebenen Einheit.
+- Fehlt ein Artikel in der Liste, aber ein vorhandener kann ihn sinnvoll ersetzen (zum Beispiel Anschlagwinkel statt Zimmermannswinkel), nimm den vorhandenen und schreibe unter HINWEISE, was du ersetzt hast.
+- Nur wenn nichts passt: nenne einen neuen kurzen Namen ohne Marke und setze (NEU) dahinter.
+- Material mit Menge und Einheit, aus den Angaben gerechnet, plus 5 bis 10 % Verschnitt wo üblich. Werkzeug mit Anzahl, meist 1, weil ich Aufgaben nacheinander erledige.
+- Beschreibung: 5 bis 10 nummerierte Arbeitsschritte mit wichtigen Trocknungs- und Wartezeiten.
+- Beachte meine Zusatzanweisung, falls vorhanden.
+- Warne unter HINWEISE bei Gefahr (Strom, Gas, Statik, Absturz) und wenn ein Fachbetrieb oder eine Genehmigung nötig ist.
+
+FORMAT
+TITEL:
+KATEGORIE:
+WIEDERHOLUNG: (Anzahl Tage oder einmalig)
+
+MATERIAL:
+- Menge Einheit Artikelname
+
+WERKZEUG:
+- Anzahl Stk Werkzeugname
+
+BESCHREIBUNG:
+1. ...
+
+ÄNDERUNGEN: (Liste, was du gegenüber dem aktuellen Stand geändert hast und warum)
+- ...
+
+HINWEISE:
+- ...
+
+FRAGEN:
+- ...
+
+MEIN LAGER, MATERIAL (Name [Einheit]):
+{{LAGER_MATERIAL}}
+
+MEIN LAGER, WERKZEUG:
+{{LAGER_WERKZEUG}}
+
+AKTUELLER STAND DER AUFGABE
+Titel: {{TITEL}}
+Kategorie: {{KATEGORIE}}
+Wiederholung: {{WIEDERHOLUNG}}
+Beschreibung:
+{{BESCHREIBUNG}}
+Material:
+{{MATERIAL}}
+Werkzeug:
+{{WERKZEUG}}
+
+ZUSATZANWEISUNG:
+{{ZUSATZ}}`;
+let PC = {new: DEF_NEW, revise: DEF_REV}, PR = null;
+async function loadPromptCfg() {
+  let v = null;
+  const r = await sb.from("app_settings").select("value").eq("key", "prompt_templates").maybeSingle();
+  if (!r.error && r.data) v = r.data.value;
+  else { try { v = localStorage.getItem("prompt_templates"); } catch (e) {} }
+  if (v) try { const o = JSON.parse(v); if (o.new) PC.new = o.new; if (o.revise) PC.revise = o.revise; } catch (e) {}
+}
+function editPromptCfg() {
+  $("b-pset").innerHTML = `<h3>Prompt-Vorlagen</h3>
+  <p class="mut">Platzhalter werden beim Erstellen ersetzt: {{TITEL}} {{KATEGORIE}} {{BESCHREIBUNG}} {{WIEDERHOLUNG}} {{MATERIAL}} {{WERKZEUG}} {{LAGER_MATERIAL}} {{LAGER_WERKZEUG}} {{ZUSATZ}}</p>
+  <label>Vorlage für neue Aufgaben</label><textarea id="pc-new" style="min-height:260px">${esc(PC.new)}</textarea>
+  <label>Vorlage zum Überarbeiten vorhandener Aufgaben</label><textarea id="pc-rev" style="min-height:260px">${esc(PC.revise)}</textarea>
+  <div class="bar" style="margin-top:14px"><button class="btn" onclick="savePromptCfg()">Speichern</button>
+  <button class="btn sec" onclick="$('pc-new').value=DEF_NEW;$('pc-rev').value=DEF_REV">Standard laden</button>
+  <button class="btn sec" onclick="closeM('pset')">Abbrechen</button></div>`;
+  $("m-pset").className = "modal on";
+}
+async function savePromptCfg() {
+  const val = JSON.stringify({new: $("pc-new").value, revise: $("pc-rev").value});
+  const r = await sb.from("app_settings").upsert({key: "prompt_templates", value: val});
+  if (r.error) {
+    try { localStorage.setItem("prompt_templates", val); } catch (e) {}
+    alert("Nur auf diesem Gerät gespeichert, weil die Tabelle app_settings in Supabase fehlt (" + r.error.message + "). Für alle Mitglieder: die Datei update_prompt.sql im Supabase SQL Editor ausführen.");
+  } else alert("Gespeichert für alle Mitglieder.");
+  PC = {new: $("pc-new").value, revise: $("pc-rev").value};
+  closeM("pset");
+}
+function openPrompt(id, fromForm) {
+  let d;
+  if (fromForm) {
+    const mats = [], tools = [];
+    Object.entries(ED.sel).forEach(([iid, q]) => { const it = byId(D.items, +iid); if (it) (it.kind === "tool" ? tools : mats).push({name: it.name, unit: it.unit, qty: q}); });
+    ED.add.forEach(a => (a.kind === "tool" ? tools : mats).push({name: a.name, unit: a.unit, qty: a.qty}));
+    d = {title: $("f-title").value.trim(), cat: $("f-cat").value.trim(), desc: $("f-desc").value.trim(), int: $("f-int").value, mats, tools};
+  } else {
+    const t = byId(D.tasks, id);
+    d = {title: t.title, cat: t.category || "", desc: (t.description || "").trim(), int: t.interval_days || "",
+      mats: t.req.filter(r => r.item.kind !== "tool").map(r => ({name: r.item.name, unit: r.item.unit, qty: r.qty})),
+      tools: t.req.filter(r => r.item.kind === "tool").map(r => ({name: r.item.name, unit: r.item.unit, qty: r.qty}))};
+  }
+  PR = {id, d};
+  $("b-prompt").innerHTML = `<h3>🤖 KI-Prompt ${id ? 'zum Überarbeiten' : 'für neue Aufgabe'}</h3>
+  <div class="mut">${id ? 'Enthält den aktuellen Stand der Aufgabe.' : 'Enthält deine Eingaben aus dem Formular.'} Dazu kommen alle Artikel aus dem Lager, damit die KI dieselben Namen verwendet.</div>
+  <label>${id ? 'Was soll geändert oder geprüft werden? (optional)' : 'Zusätzliche Hinweise (optional)'}</label>
+  <textarea id="pr-extra" style="min-height:70px" oninput="refreshPrompt()"></textarea>
+  <label>Fertiger Prompt <span class="mut" id="pr-len"></span></label>
+  <textarea id="pr-out" readonly style="min-height:260px" onclick="this.select()"></textarea>
+  <div class="bar" style="margin-top:14px"><button class="btn" onclick="copyPrompt()">📋 Kopieren</button>
+  <button class="btn sec" onclick="editPromptCfg()">Vorlage ändern</button>
+  <button class="btn sec" onclick="closeM('prompt')">Schließen</button></div>`;
+  refreshPrompt();
+  $("m-prompt").className = "modal on";
+}
+function refreshPrompt() {
+  const d = PR.d, tpl = PR.id ? PC.revise : PC.new;
+  const list = a => a.length ? a.map(x => ("- " + fmt(x.qty) + " " + (x.unit || "") + " " + x.name).replace(/ +/g, " ")).join("\n") : "- (keine)";
+  const stock = k => D.items.filter(i => i.kind === k).map(i => "- " + i.name + (i.unit ? " [" + i.unit + "]" : "")).join("\n") || "- (leer)";
+  const V = {TITEL: d.title || "(leer)", KATEGORIE: d.cat || "(leer)", BESCHREIBUNG: d.desc || "(leer)",
+    WIEDERHOLUNG: d.int ? "alle " + d.int + " Tage" : "einmalig", MATERIAL: list(d.mats), WERKZEUG: list(d.tools),
+    LAGER_MATERIAL: stock("material"), LAGER_WERKZEUG: stock("tool"), ZUSATZ: ($("pr-extra").value.trim() || "(keine)")};
+  const out = tpl.replace(/\{\{(\w+)\}\}/g, (m, k) => k in V ? V[k] : m);
+  $("pr-out").value = out; $("pr-len").textContent = "(" + out.length + " Zeichen)";
+}
+async function copyPrompt() {
+  const el = $("pr-out");
+  try { await navigator.clipboard.writeText(el.value); alert("Kopiert."); }
+  catch (e) { el.select(); document.execCommand("copy"); alert("Kopiert."); }
 }
 sb.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT") { clearInterval(timer); showLogin(); } });
 init();
