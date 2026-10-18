@@ -83,7 +83,19 @@ const fmt = n => String(Math.round(Number(n) * 100) / 100);
 const ikey = (kind, n, u) => kind + "|" + (n || "").trim().toLowerCase() + "|" + (u || "").trim().toLowerCase();
 function chkErr(res) { if (res.error) { alert("Fehler: " + res.error.message); throw res.error; } return res.data; }
 
-let D = {tasks: [], docs: [], items: []}, T = "tasks", F = "ready", CAT = "", SF = "all", USER = null, timer = null;
+let D = {tasks: [], docs: [], items: []}, T = "tasks", F = "ready", CAT = "", SF = "all", USER = null, timer = null, SQ = "", PQ = "";
+const norm = x => String(x ?? "").toLowerCase();
+const hit = (i, q) => { const hay = norm(i.name + " " + i.unit); return norm(q).split(/\s+/).filter(Boolean).every(w => hay.includes(w)); };
+async function fetchAll(tbl, ord) {
+  let all = [];
+  for (let from = 0; ; from += 1000) {
+    let q = sb.from(tbl).select("*"); if (ord) q = q.order(ord);
+    const r = await q.range(from, from + 999);
+    if (r.error) return r;
+    all = all.concat(r.data);
+    if (r.data.length < 1000) return {data: all, error: null};
+  }
+}
 let ED = {sel: {}, add: []};
 
 /* ---------- Anmeldung ---------- */
@@ -119,7 +131,7 @@ async function start() {
   $("auth").style.display = "none"; $("app").style.display = "block";
   await load();
   clearInterval(timer);
-  timer = setInterval(() => { if (!document.querySelector(".modal.on")) load(); }, 15000);
+  timer = setInterval(() => { if (!document.querySelector(".modal.on") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || "")) load(); }, 15000);
 }
 async function init() {
   if (HASH.includes("type=invite") || HASH.includes("type=recovery")) {
@@ -132,10 +144,10 @@ async function init() {
 /* ---------- Daten laden und berechnen ---------- */
 async function load() {
   const [t, it, ti, d, td, dp] = await Promise.all([
-    sb.from("tasks").select("*").order("id"), sb.from("items").select("*").order("name"),
-    sb.from("task_items").select("*"), sb.from("docs").select("*").order("title"),
-    sb.from("task_docs").select("*"), sb.from("deps").select("*")]);
+    fetchAll("tasks", "id"), fetchAll("items", "id"), fetchAll("task_items", "id"),
+    fetchAll("docs", "id"), fetchAll("task_docs"), fetchAll("deps")]);
   const tasks = chkErr(t), items = chkErr(it), tis = chkErr(ti), docs = chkErr(d), tdocs = chkErr(td), deps = chkErr(dp);
+  items.sort((a, b) => a.name.localeCompare(b.name)); docs.sort((a, b) => a.title.localeCompare(b.title));
   const byid = {}; tasks.forEach(x => byid[x.id] = x);
   const iid = {}; items.forEach(i => { i.stock = Number(i.stock); i.demand = 0; iid[i.id] = i; });
   const sat = x => x.done || (x.interval_days && x.last_done);
@@ -147,7 +159,7 @@ async function load() {
     x.missing = x.req.filter(r => r.item.stock < r.qty).map(r => r.item.name);
     x.ready = !x.done && x.blocked_by.length === 0 && x.missing.length === 0;
     x.due = !!(x.interval_days && (!x.next_due || x.next_due <= today()));
-    if (!x.done) x.req.forEach(r => r.item.demand += r.qty);
+    if (!x.done) x.req.forEach(r => { r.item.demand = r.item.kind === "tool" ? Math.max(r.item.demand, r.qty) : r.item.demand + r.qty; });
   }
   items.forEach(i => i.saldo = i.stock - i.demand);
   for (const q of docs) q.task_ids = tdocs.filter(r => r.doc_id === q.id).map(r => r.task_id);
@@ -237,7 +249,7 @@ async function openFile(id) {
 function editTask(id) {
   const t = id ? byId(D.tasks, id) : {title:"",category:"",description:"",interval_days:"",req:[],doc_ids:[],dep_ids:[]};
   closeM("view");
-  ED = {sel: {}, add: []};
+  ED = {sel: {}, add: []}; PQ = "";
   t.req.forEach(r => ED.sel[r.item.id] = r.qty);
   $("b-task").innerHTML = `<h3>${id?'Aufgabe bearbeiten':'Neue Aufgabe'}</h3>
   <label>Titel</label><input id="f-title" value="${esc(t.title)}">
@@ -254,10 +266,8 @@ function editTask(id) {
   $("m-task").className = "modal on";
 }
 function renderPicker() {
-  const items = [...D.items].sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
-  let h = `<div class="pick">${items.map(i => `<div class="prow"><input type="checkbox" ${ED.sel[i.id]!==undefined?'checked':''} onchange="togSel(${i.id},this.checked)">
-    <span class="nm">${i.kind==='tool'?'🔧 ':''}${esc(i.name)} ${i.unit?'('+esc(i.unit)+')':''} <span class="mut">Bestand ${fmt(i.stock)}</span></span>
-    ${ED.sel[i.id]!==undefined?`<input type="number" step="any" min="0" value="${ED.sel[i.id]}" oninput="setQty(${i.id},this.value)">`:''}</div>`).join("") || '<span class="mut">Lager ist noch leer. Neue Artikel unten hinzufügen.</span>'}</div>`;
+  let h = `<input id="p-q" type="search" placeholder="Material/Werkzeug suchen …" value="${esc(PQ)}" oninput="PQ=this.value;pickList()" style="margin-bottom:6px">
+  <div class="mut" id="p-info"></div><div id="pickList"></div>`;
   if (ED.add.length) h += `<div class="sec2">Neu (Bestand 0, im Lager dann im Minus)</div>` + ED.add.map((a, n) => `<div class="prow"><span class="nm">${a.kind==='tool'?'🔧 ':''}${fmt(a.qty)} ${esc(a.unit)} ${esc(a.name)}</span><button class="btn sec" onclick="rmAdd(${n})">✕</button></div>`).join("");
   h += `<div class="sec2">Neuen Artikel hinzufügen</div>
   <div class="bar"><select id="n-kind" style="width:130px"><option value="material">Material</option><option value="tool">Werkzeug</option></select>
@@ -265,9 +275,17 @@ function renderPicker() {
   <input id="n-unit" placeholder="Einheit (Sack, m, Stk)" style="width:130px">
   <input id="n-qty" type="number" step="any" min="0" value="1" style="width:80px">
   <button class="btn" onclick="addNew()">+</button></div>`;
-  $("picker").innerHTML = h;
+  $("picker").innerHTML = h; pickList();
 }
-function togSel(id, on) { if (on) ED.sel[id] = 1; else delete ED.sel[id]; renderPicker(); }
+function pickList() {
+  const q = PQ.trim(), nsel = Object.keys(ED.sel).length;
+  const items = [...D.items].filter(i => !q || hit(i, q) || ED.sel[i.id] !== undefined).sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  $("p-info").textContent = (q ? items.length + " Treffer · " : D.items.length + " Artikel · ") + nsel + " ausgewählt";
+  $("pickList").innerHTML = `<div class="pick" style="max-height:300px">${items.map(i => `<div class="prow"><input type="checkbox" ${ED.sel[i.id]!==undefined?'checked':''} onchange="togSel(${i.id},this.checked)">
+    <span class="nm">${i.kind==='tool'?'🔧 ':''}${esc(i.name)} ${i.unit?'('+esc(i.unit)+')':''} <span class="mut">Bestand ${fmt(i.stock)}</span></span>
+    ${ED.sel[i.id]!==undefined?`<input type="number" step="any" min="0" value="${ED.sel[i.id]}" oninput="setQty(${i.id},this.value)">`:''}</div>`).join("") || `<span class="mut">${q ? 'Keine Treffer.' : 'Lager ist noch leer. Neue Artikel unten hinzufügen.'}</span>`}</div>`;
+}
+function togSel(id, on) { if (on) ED.sel[id] = 1; else delete ED.sel[id]; pickList(); }
 function setQty(id, v) { ED.sel[id] = parseFloat(String(v).replace(",", ".")) || 0; }
 function rmAdd(n) { ED.add.splice(n, 1); renderPicker(); }
 function addNew() {
@@ -310,22 +328,27 @@ async function delTask(id) { if (!confirm("Aufgabe wirklich löschen?")) return;
 
 /* ---------- Lager ---------- */
 function renderStock() {
-  let h = `<div class="bar"><button class="btn" onclick="editItem()">+ Neuer Artikel</button>
+  $("main").innerHTML = `<div class="bar"><button class="btn" onclick="editItem()">+ Neuer Artikel</button>
     <button class="chip ${SF==='all'?'on':''}" onclick="SF='all';render()">Alle</button>
     <button class="chip ${SF==='miss'?'on':''}" onclick="SF='miss';render()">Nur Fehlendes</button></div>
-    <p class="mut">Bestand = was du hast. Bedarf = Summe der offenen Aufgaben. Saldo = Bestand minus Bedarf (rot und negativ = fehlt). Beim Abschließen einer Aufgabe wird Material vom Bestand abgezogen, Werkzeug nicht.</p>`;
+    <div class="bar"><input id="s-q" type="search" placeholder="Lager durchsuchen …" value="${esc(SQ)}" oninput="SQ=this.value;stockList()"></div>
+    <p class="mut">Bestand = was du hast. Bedarf = Summe der offenen Aufgaben. Saldo = Bestand minus Bedarf (rot und negativ = fehlt). Beim Abschließen einer Aufgabe wird Material vom Bestand abgezogen, Werkzeug nicht. Werkzeug wird nacheinander benutzt: Als Bedarf zählt die größte Menge einer einzelnen Aufgabe, nicht die Summe.</p>
+    <div id="stockList"></div>`;
+  stockList();
+}
+function stockList() {
+  const q = SQ.trim();
   const block = (kind, title) => {
-    const list = D.items.filter(i => i.kind === kind && (SF === 'all' || i.saldo < 0));
-    let s = `<h3>${title}</h3>`;
-    if (!list.length) return s + `<p class="mut">${SF==='miss'?'Nichts fehlt.':'Noch nichts angelegt.'}</p>`;
+    const list = D.items.filter(i => i.kind === kind && (SF === 'all' || i.saldo < 0) && (!q || hit(i, q)));
+    let s = `<h3>${title} (${list.length})</h3>`;
+    if (!list.length) return s + `<p class="mut">${q?'Keine Treffer.':SF==='miss'?'Nichts fehlt.':'Noch nichts angelegt.'}</p>`;
     return s + list.map(i => `<div class="card"><div class="row"><div class="grow"><b>${kind==='tool'?'🔧 ':''}${esc(i.name)}</b> ${i.unit?`<span class="mut">(${esc(i.unit)})</span>`:''}
       <div style="margin-top:6px" class="bar"><span>Bestand</span><input class="stk" type="number" step="any" value="${fmt(i.stock)}" onchange="setStock(${i.id},this.value)">
       <span class="mut">Bedarf ${fmt(i.demand)}</span>
       <span class="${i.saldo<0?'neg':'pos'}">Saldo ${fmt(i.saldo)}</span></div></div>
       <div>${i.saldo<0?`<button class="btn" onclick="bought(${i.id})">✓ gekauft</button> `:''}<button class="btn sec" onclick="editItem(${i.id})">✎</button></div></div></div>`).join("");
   };
-  h += block("material", "Material") + block("tool", "Werkzeug");
-  $("main").innerHTML = h;
+  $("stockList").innerHTML = block("material", "Material") + block("tool", "Werkzeug");
 }
 async function setStock(id, v) {
   const n = parseFloat(String(v).replace(",", "."));
@@ -405,7 +428,52 @@ async function delDoc(id) {
 function renderMe() {
   $("main").innerHTML = `<div class="card"><h3>Angemeldet als</h3><p>${esc(USER?.email)}</p>
   <div class="bar"><button class="btn sec" onclick="logout()">Abmelden</button></div>
-  <p class="mut">Mitglieder einladen oder entfernen: im Supabase-Dashboard unter Authentication > Users.</p></div>`;
+  <p class="mut">Mitglieder einladen oder entfernen: im Supabase-Dashboard unter Authentication > Users.</p></div>
+  <div class="card"><h3>Backup</h3>
+  <p class="mut">Speichert Aufgaben, Lager, Anleitungstexte und Zuordnungen als Datei. Angehängte Dateien (PDF, Bilder) sind nicht enthalten.</p>
+  <div class="bar"><button class="btn" onclick="exportBackup()">Backup herunterladen</button></div>
+  <label>Backup einspielen (ersetzt alle aktuellen Daten)</label>
+  <input type="file" accept=".json,application/json" onchange="if(this.files[0])importBackup(this.files[0]);this.value=''"></div>`;
+}
+
+/* ---------- Backup ---------- */
+const BK_TABLES = ["items", "docs", "tasks", "task_items", "task_docs", "deps"];
+async function exportBackup() {
+  const out = {app: "bauplaner", version: 1, exported: new Date().toISOString()};
+  for (const n of BK_TABLES) out[n] = chkErr(await fetchAll(n, ["items","docs","tasks","task_items"].includes(n) ? "id" : null));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], {type: "application/json"}));
+  a.download = "bauplaner-backup-" + today() + ".json";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+async function insMap(tbl, rows) {
+  const map = {};
+  for (let i = 0; i < rows.length; i += 200) {
+    const part = rows.slice(i, i + 200);
+    const clean = part.map(r => { const o = {...r}; for (const k of ["id", "created_by", "user_id"]) delete o[k]; return o; });
+    const res = chkErr(await sb.from(tbl).insert(clean).select("id"));
+    if (res.length !== part.length) throw new Error("Import: unerwartete Antwort bei " + tbl);
+    part.forEach((r, k) => map[r.id] = res[k].id);
+  }
+  return map;
+}
+async function insRows(tbl, rows) {
+  for (let i = 0; i < rows.length; i += 200) chkErr(await sb.from(tbl).insert(rows.slice(i, i + 200)));
+}
+async function importBackup(file) {
+  let b;
+  try { b = JSON.parse(await file.text()); } catch (e) { alert("Das ist keine gültige Backup-Datei."); return; }
+  if (!b || b.app !== "bauplaner" || BK_TABLES.some(n => !Array.isArray(b[n]))) { alert("Das ist keine Bauplaner-Backup-Datei."); return; }
+  if (!confirm(`Backup vom ${(b.exported || "").slice(0, 10)} einspielen?\n${b.tasks.length} Aufgaben, ${b.items.length} Artikel, ${b.docs.length} Anleitungen.\n\nACHTUNG: Alle aktuellen Daten werden ersetzt. Vorher wird der aktuelle Stand automatisch als Backup heruntergeladen.`)) return;
+  await exportBackup();
+  for (const t of ["task_items", "task_docs", "deps"]) chkErr(await sb.from(t).delete().gte("task_id", 0));
+  for (const t of ["tasks", "items", "docs"]) chkErr(await sb.from(t).delete().gte("id", 0));
+  const im = await insMap("items", b.items), dm = await insMap("docs", b.docs), tm = await insMap("tasks", b.tasks);
+  await insRows("task_items", b.task_items.filter(r => tm[r.task_id] && im[r.item_id]).map(r => ({task_id: tm[r.task_id], item_id: im[r.item_id], qty: r.qty})));
+  await insRows("task_docs", b.task_docs.filter(r => tm[r.task_id] && dm[r.doc_id]).map(r => ({task_id: tm[r.task_id], doc_id: dm[r.doc_id]})));
+  await insRows("deps", b.deps.filter(r => tm[r.task_id] && tm[r.depends_on]).map(r => ({task_id: tm[r.task_id], depends_on: tm[r.depends_on]})));
+  alert("Backup eingespielt.");
+  load();
 }
 sb.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT") { clearInterval(timer); showLogin(); } });
 init();
