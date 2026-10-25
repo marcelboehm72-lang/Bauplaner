@@ -44,6 +44,8 @@ label{display:block;margin:10px 0 4px;font-weight:600;font-size:14px}
 .stk{width:90px;padding:6px}
 pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit;margin:6px 0}
 a{color:var(--ac)}
+.lnk{cursor:pointer;text-decoration:underline dotted}
+.offer{white-space:pre-wrap}
 .sec2{margin-top:10px;font-weight:600;font-size:14px}
 #auth{max-width:380px;margin:60px auto;padding:16px}
 #app{display:none}
@@ -67,6 +69,8 @@ a{color:var(--ac)}
 <div class="modal" id="m-view"><div class="box" id="b-view"></div></div>
 <div class="modal" id="m-prompt"><div class="box" id="b-prompt"></div></div>
 <div class="modal" id="m-pset"><div class="box" id="b-pset"></div></div>
+<div class="modal" id="m-idet"><div class="box" id="b-idet"></div></div>
+<div class="modal" id="m-pdf"><div class="box" id="b-pdf"></div></div>
 
 <script>
 // ===== Supabase-Zugang =====
@@ -87,7 +91,7 @@ function chkErr(res) { if (res.error) { alert("Fehler: " + res.error.message); t
 
 let D = {tasks: [], docs: [], items: []}, T = "tasks", F = "ready", CAT = "", SF = "all", USER = null, timer = null, SQ = "", PQ = "";
 const norm = x => String(x ?? "").toLowerCase();
-const hit = (i, q) => { const hay = norm(i.name + " " + i.unit); return norm(q).split(/\s+/).filter(Boolean).every(w => hay.includes(w)); };
+const hit = (i, q) => { const hay = norm(i.name + " " + i.unit + " " + (i.offers || []).map(o => o.vendor + " " + o.product).join(" ")); return norm(q).split(/\s+/).filter(Boolean).every(w => hay.includes(w)); };
 async function fetchAll(tbl, ord) {
   let all = [];
   for (let from = 0; ; from += 1000) {
@@ -146,10 +150,12 @@ async function init() {
 
 /* ---------- Daten laden und berechnen ---------- */
 async function load() {
-  const [t, it, ti, d, td, dp] = await Promise.all([
+  const [t, it, ti, d, td, dp, ofr] = await Promise.all([
     fetchAll("tasks", "id"), fetchAll("items", "id"), fetchAll("task_items", "id"),
-    fetchAll("docs", "id"), fetchAll("task_docs"), fetchAll("deps")]);
+    fetchAll("docs", "id"), fetchAll("task_docs"), fetchAll("deps"), fetchAll("item_offers", "id")]);
   const tasks = chkErr(t), items = chkErr(it), tis = chkErr(ti), docs = chkErr(d), tdocs = chkErr(td), deps = chkErr(dp);
+  OFFERS_OK = !ofr.error; const offers = ofr.error ? [] : ofr.data;
+  items.forEach(i => i.offers = offers.filter(o => o.item_id === i.id));
   items.sort((a, b) => a.name.localeCompare(b.name)); docs.sort((a, b) => a.title.localeCompare(b.title));
   const byid = {}; tasks.forEach(x => byid[x.id] = x);
   const iid = {}; items.forEach(i => { i.stock = Number(i.stock); i.demand = 0; iid[i.id] = i; });
@@ -188,7 +194,7 @@ function renderTasks() {
   const cats = [...new Set(D.tasks.map(t => t.category).filter(Boolean))].sort();
   let h = `<div class="bar">${FILTERS.map(([k,n]) => `<button class="chip ${F===k?'on':''}" onclick="F='${k}';render()">${n} (${D.tasks.filter(t => {const o=F;F=k;const r=matchF(t);F=o;return r}).length})</button>`).join("")}</div>`;
   if (cats.length) h += `<div class="bar"><select onchange="CAT=this.value;render()"><option value="">Alle Kategorien</option>${cats.map(c => `<option ${CAT===c?'selected':''}>${esc(c)}</option>`).join("")}</select></div>`;
-  h += `<div class="bar"><button class="btn" onclick="editTask()">+ Neue Aufgabe</button></div>`;
+  h += `<div class="bar"><button class="btn" onclick="editTask()">+ Neue Aufgabe</button><button class="btn sec" onclick="openPdf()">🖨 PDF / Drucken</button></div>`;
   const list = D.tasks.filter(t => matchF(t) && (!CAT || t.category === CAT));
   if (!list.length) h += `<p class="mut">Keine Aufgaben in dieser Ansicht.</p>`;
   for (const t of list) {
@@ -226,7 +232,7 @@ function viewTask(id) {
   if (mats.length) h += `<div class="sec2">Material</div>${mats.map(line).join("")}`;
   if (tls.length) h += `<div class="sec2">Werkzeug</div>${tls.map(line).join("")}`;
   if (t.doc_ids.length) h += `<div class="sec2">Anleitungen</div>${t.doc_ids.map(i => byId(D.docs, i)).filter(Boolean).map(d => `<div><a href="#" onclick="viewDoc(${d.id});return false">📄 ${esc(d.title)}</a></div>`).join("")}`;
-  h += `<div class="bar" style="margin-top:14px"><button class="btn" onclick="editTask(${id})">Bearbeiten</button><button class="btn sec" onclick="openPrompt(${id},false)">🤖 KI-Prompt</button><button class="btn sec" onclick="closeM('view')">Schließen</button></div>`;
+  h += `<div class="bar" style="margin-top:14px"><button class="btn" onclick="editTask(${id})">Bearbeiten</button><button class="btn sec" onclick="openPrompt(${id},false)">🤖 KI-Prompt</button><button class="btn sec" onclick="openPdf([${id}])">🖨 Drucken</button><button class="btn sec" onclick="closeM('view')">Schließen</button></div>`;
   $("b-view").innerHTML = h; $("m-view").className = "modal on";
 }
 function viewDoc(id) {
@@ -346,8 +352,8 @@ function stockList() {
     const list = D.items.filter(i => i.kind === kind && (SF === 'all' || i.saldo < 0) && (!q || hit(i, q)));
     let s = `<h3>${title} (${list.length})</h3>`;
     if (!list.length) return s + `<p class="mut">${q?'Keine Treffer.':SF==='miss'?'Nichts fehlt.':'Noch nichts angelegt.'}</p>`;
-    return s + list.map(i => `<div class="card"><div class="row"><div class="grow"><b>${kind==='tool'?'🔧 ':''}${esc(i.name)}</b> ${i.unit?`<span class="mut">(${esc(i.unit)})</span>`:''}
-      <div style="margin-top:6px" class="bar"><span>Bestand</span><input class="stk" type="number" step="any" value="${fmt(i.stock)}" onchange="setStock(${i.id},this.value)">
+    return s + list.map(i => `<div class="card"><div class="row"><div class="grow"><b class="lnk" onclick="openItem(${i.id})">${kind==='tool'?'🔧 ':''}${esc(i.name)}</b> ${i.unit?`<span class="mut">(${esc(i.unit)})</span>`:''}
+      ${itemTags(i)}<div style="margin-top:6px" class="bar"><span>Bestand</span><input class="stk" type="number" step="any" value="${fmt(i.stock)}" onchange="setStock(${i.id},this.value)">
       <span class="mut">Bedarf ${fmt(i.demand)}</span>
       <span class="${i.saldo<0?'neg':'pos'}">Saldo ${fmt(i.saldo)}</span></div></div>
       <div>${i.saldo<0?`<button class="btn" onclick="bought(${i.id})">✓ gekauft</button> `:''}<button class="btn sec" onclick="editItem(${i.id})">✎</button></div></div></div>`).join("");
@@ -448,6 +454,7 @@ const BK_TABLES = ["items", "docs", "tasks", "task_items", "task_docs", "deps"];
 async function exportBackup() {
   const out = {app: "bauplaner", version: 1, exported: new Date().toISOString()};
   for (const n of BK_TABLES) out[n] = chkErr(await fetchAll(n, ["items","docs","tasks","task_items"].includes(n) ? "id" : null));
+  const ofr = await fetchAll("item_offers", "id"); if (!ofr.error) out.item_offers = ofr.data;
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], {type: "application/json"}));
   a.download = "bauplaner-backup-" + today() + ".json";
@@ -474,8 +481,11 @@ async function importBackup(file) {
   if (!confirm(`Backup vom ${(b.exported || "").slice(0, 10)} einspielen?\n${b.tasks.length} Aufgaben, ${b.items.length} Artikel, ${b.docs.length} Anleitungen.\n\nACHTUNG: Alle aktuellen Daten werden ersetzt. Vorher wird der aktuelle Stand automatisch als Backup heruntergeladen.`)) return;
   await exportBackup();
   for (const t of ["task_items", "task_docs", "deps"]) chkErr(await sb.from(t).delete().gte("task_id", 0));
+  await sb.from("item_offers").delete().gte("id", 0);
   for (const t of ["tasks", "items", "docs"]) chkErr(await sb.from(t).delete().gte("id", 0));
   const im = await insMap("items", b.items), dm = await insMap("docs", b.docs), tm = await insMap("tasks", b.tasks);
+  const orows = (b.item_offers || []).filter(r => im[r.item_id]).map(r => ({item_id: im[r.item_id], vendor: r.vendor, product: r.product, price: r.price, price_unit: r.price_unit, link: r.link, note: r.note}));
+  for (let k = 0; k < orows.length; k += 200) { const rr = await sb.from("item_offers").insert(orows.slice(k, k + 200)); if (rr.error) { alert("Angebote konnten nicht wiederhergestellt werden: " + rr.error.message); break; } }
   await insRows("task_items", b.task_items.filter(r => tm[r.task_id] && im[r.item_id]).map(r => ({task_id: tm[r.task_id], item_id: im[r.item_id], qty: r.qty})));
   await insRows("task_docs", b.task_docs.filter(r => tm[r.task_id] && dm[r.doc_id]).map(r => ({task_id: tm[r.task_id], doc_id: dm[r.doc_id]})));
   await insRows("deps", b.deps.filter(r => tm[r.task_id] && tm[r.depends_on]).map(r => ({task_id: tm[r.task_id], depends_on: tm[r.depends_on]})));
@@ -653,6 +663,176 @@ async function copyPrompt() {
   const el = $("pr-out");
   try { await navigator.clipboard.writeText(el.value); alert("Kopiert."); }
   catch (e) { el.select(); document.execCommand("copy"); alert("Kopiert."); }
+}
+
+/* ---------- Lager: Angebote und Entsorgung ---------- */
+let OFFERS_OK = true;
+const eur = n => (Math.round(Number(n) * 100) / 100).toFixed(2).replace(".", ",") + " €";
+function normUrl(u) {
+  u = String(u || "").trim(); if (!u) return "";
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = "https://" + u;
+  return /^https?:\/\//i.test(u) ? u : "";
+}
+function cheapest(i) {
+  const p = (i.offers || []).filter(o => o.price !== null && o.price !== undefined && o.price !== "");
+  return p.length ? p.reduce((a, b) => Number(a.price) <= Number(b.price) ? a : b) : null;
+}
+function itemTags(i) {
+  const b = cheapest(i), n = (i.offers || []).length;
+  return `<div>${n ? `<span class="tag ac">${n} Angebot${n > 1 ? 'e' : ''}${b ? ' · ab ' + eur(b.price) : ''}</span>` : ''}${i.disposal ? '<span class="tag">♻ Entsorgungshinweis</span>' : ''}</div>`;
+}
+function openItem(id) { renderItemDet(id, 0); $("m-idet").className = "modal on"; }
+function renderItemDet(id, offerId) {
+  const i = byId(D.items, id); if (!i) return;
+  const offers = [...(i.offers || [])].sort((a, b) => (a.price == null) - (b.price == null) || Number(a.price) - Number(b.price));
+  const best = cheapest(i), o = offerId ? offers.find(x => x.id === offerId) : null;
+  let h = `<h3>${i.kind === 'tool' ? '🔧 ' : ''}${esc(i.name)} ${i.unit ? `<span class="mut">(${esc(i.unit)})</span>` : ''}</h3>
+  <div class="mut">Bestand ${fmt(i.stock)} · Bedarf ${fmt(i.demand)} · Saldo ${fmt(i.saldo)}</div>`;
+  if (!OFFERS_OK) h += `<p class="neg">Die Tabelle für Angebote fehlt noch. Bitte update_lager2.sql im Supabase SQL Editor ausführen.</p>`;
+  h += `<div class="sec2">♻ Entsorgung / Restmengen</div>
+  <textarea id="i-disp" placeholder="z. B. Restmengen kleiner 10 cm entsorgen">${esc(i.disposal)}</textarea>
+  <div class="bar" style="margin-top:6px"><button class="btn" onclick="saveDisposal(${id})">Hinweis speichern</button></div>
+  <div class="sec2">Angebote und Anbieter</div>`;
+  if (!offers.length) h += `<p class="mut">Noch keine Angebote.</p>`;
+  h += offers.map(x => `<div class="card"><div class="row"><div class="grow"><b>${esc(x.vendor)}</b>
+    ${best && x.id === best.id && offers.length > 1 ? '<span class="tag ok">günstigster</span>' : ''}
+    ${x.product ? `<div class="offer">${esc(x.product)}</div>` : ''}
+    <div>${x.price !== null && x.price !== undefined && x.price !== '' ? `<b>${eur(x.price)}</b>` : '<span class="mut">kein Preis</span>'} ${esc(x.price_unit)}
+    ${x.link ? ` · <a href="${esc(x.link)}" target="_blank" rel="noopener">Link</a>` : ''}</div>
+    ${x.note ? `<div class="mut offer">${esc(x.note)}</div>` : ''}</div>
+    <div><button class="btn sec" onclick="renderItemDet(${id},${x.id})">✎</button> <button class="btn dng" onclick="delOffer(${x.id},${id})">✕</button></div></div></div>`).join("");
+  h += `<div class="sec2">${o ? 'Angebot bearbeiten' : 'Angebot hinzufügen'}</div>
+  <label>Anbieter</label><input id="o-vendor" value="${esc(o ? o.vendor : '')}" placeholder="z. B. Raiffeisen">
+  <label>Produktbeschreibung</label><textarea id="o-product" placeholder="z. B. Baustahl 10 mm, Stab 6 m, B500B">${esc(o ? o.product : '')}</textarea>
+  <div class="bar"><div style="flex:1;min-width:110px"><label>Preis (€)</label><input id="o-price" inputmode="decimal" value="${o && o.price !== null && o.price !== undefined ? esc(String(o.price).replace('.', ',')) : ''}"></div>
+  <div style="flex:2;min-width:140px"><label>Preis gilt für</label><input id="o-unit" value="${esc(o ? o.price_unit : '')}" placeholder="z. B. pro Stab 6 m"></div></div>
+  <label>Link (optional)</label><input id="o-link" value="${esc(o ? o.link : '')}" placeholder="https://…">
+  <label>Notiz (optional)</label><input id="o-note" value="${esc(o ? o.note : '')}">
+  <div class="bar" style="margin-top:12px"><button class="btn" onclick="saveOffer(${id},${o ? o.id : 0})">${o ? 'Änderung speichern' : 'Angebot speichern'}</button>
+  ${o ? `<button class="btn sec" onclick="renderItemDet(${id},0)">Abbrechen</button>` : ''}
+  <button class="btn sec" onclick="closeM('idet')">Schließen</button></div>`;
+  $("b-idet").innerHTML = h;
+}
+async function saveDisposal(id) {
+  const r = await sb.from("items").update({disposal: $("i-disp").value}).eq("id", id);
+  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager2.sql in Supabase ausgeführt?"); return; }
+  await load(); renderItemDet(id, 0);
+}
+async function saveOffer(itemId, offerId) {
+  const vendor = $("o-vendor").value.trim(); if (!vendor) { alert("Anbieter fehlt"); return; }
+  const raw = $("o-price").value.trim().replace(",", "."), price = raw === "" ? null : parseFloat(raw);
+  if (raw !== "" && isNaN(price)) { alert("Der Preis ist keine Zahl"); return; }
+  const lk = $("o-link").value.trim(), link = normUrl(lk);
+  if (lk && !link) { alert("Der Link muss mit http:// oder https:// beginnen"); return; }
+  const row = {item_id: itemId, vendor, product: $("o-product").value.trim(), price, price_unit: $("o-unit").value.trim(), link, note: $("o-note").value.trim()};
+  const r = offerId ? await sb.from("item_offers").update(row).eq("id", offerId) : await sb.from("item_offers").insert(row);
+  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager2.sql in Supabase ausgeführt?"); return; }
+  await load(); renderItemDet(itemId, 0);
+}
+async function delOffer(offerId, itemId) {
+  if (!confirm("Angebot löschen?")) return;
+  chkErr(await sb.from("item_offers").delete().eq("id", offerId));
+  await load(); renderItemDet(itemId, 0);
+}
+
+/* ---------- PDF / Druck ---------- */
+let PDFSEL = new Set(), PDFO = {overview: true, docs: true, offers: true, disp: true, notes: true};
+function orderedTasks(list) {
+  const set = new Set(list.map(t => t.id)), seen = new Set(), out = [];
+  const visit = t => { if (seen.has(t.id)) return; seen.add(t.id); t.dep_ids.map(i => byId(D.tasks, i)).filter(x => x && set.has(x.id)).forEach(visit); out.push(t); };
+  [...list].sort((a, b) => a.id - b.id).forEach(visit);
+  return out;
+}
+function openPdf(pre) {
+  PDFSEL = new Set(pre || D.tasks.filter(t => matchF(t) && (!CAT || t.category === CAT)).map(t => t.id));
+  renderPdfDlg(); $("m-pdf").className = "modal on";
+}
+function pdfPick(mode) {
+  if (mode === "all") PDFSEL = new Set(D.tasks.map(t => t.id));
+  else if (mode === "none") PDFSEL = new Set();
+  else PDFSEL = new Set(D.tasks.filter(t => matchF(t) && (!CAT || t.category === CAT)).map(t => t.id));
+  renderPdfDlg();
+}
+function pdfTog(id, on) { if (on) PDFSEL.add(id); else PDFSEL.delete(id); $("pdf-cnt").textContent = PDFSEL.size + " Aufgabe(n) ausgewählt"; }
+function renderPdfDlg() {
+  const list = [...D.tasks].sort((a, b) => (a.category || "").localeCompare(b.category || "") || a.title.localeCompare(b.title));
+  const opt = (k, txt) => `<label style="font-weight:400"><input type="checkbox" ${PDFO[k] ? 'checked' : ''} onchange="PDFO.${k}=this.checked"> ${txt}</label>`;
+  $("b-pdf").innerHTML = `<h3>🖨 Aufgaben als PDF / Druck</h3>
+  <p class="mut">Wähle die Aufgaben. Sie werden in der Reihenfolge ihrer Voraussetzungen gedruckt. Im nächsten Fenster wählst du „Drucken / Als PDF speichern“.</p>
+  <div class="bar"><button class="chip" onclick="pdfPick('view')">Aktuelle Ansicht</button><button class="chip" onclick="pdfPick('all')">Alle</button><button class="chip" onclick="pdfPick('none')">Keine</button></div>
+  <div class="mut" id="pdf-cnt">${PDFSEL.size} Aufgabe(n) ausgewählt</div>
+  <div class="pick" style="max-height:260px">${list.map(t => `<label><input type="checkbox" ${PDFSEL.has(t.id) ? 'checked' : ''} onchange="pdfTog(${t.id},this.checked)">${esc(t.title)} <span class="mut">${esc(t.category)}</span></label>`).join("") || '<span class="mut">Keine Aufgaben</span>'}</div>
+  <div class="sec2">Inhalt</div>
+  ${opt('overview', 'Übersichtsseite mit Materialbedarf der Auswahl')}
+  ${opt('docs', 'Anleitungstexte')}
+  ${opt('offers', 'Anbieter und Preise')}
+  ${opt('disp', 'Entsorgungshinweise')}
+  ${opt('notes', 'Notizfeld und Erledigt-Zeile')}
+  <div class="bar" style="margin-top:14px"><button class="btn" onclick="makePdf()">Erstellen</button><button class="btn sec" onclick="closeM('pdf')">Schließen</button></div>`;
+}
+function makePdf() {
+  const tasks = orderedTasks(D.tasks.filter(t => PDFSEL.has(t.id)));
+  if (!tasks.length) { alert("Keine Aufgabe ausgewählt."); return; }
+  const w = window.open("", "_blank");
+  if (!w) { alert("Das Fenster wurde blockiert. Bitte Pop-ups für diese Seite erlauben."); return; }
+  w.document.open(); w.document.write(buildPrintHtml(tasks, PDFO)); w.document.close();
+}
+function buildPrintHtml(tasks, o) {
+  const status = t => t.done ? "erledigt" + (t.done_date ? " am " + t.done_date : "") : t.blocked_by.length ? "wartet auf Voraussetzungen" : t.missing.length ? "Material/Werkzeug fehlt" : "machbar";
+  const rep = t => t.interval_days ? "alle " + t.interval_days + " Tage" : "einmalig";
+  const box = '<span class="box"></span>';
+  const offerRows = it => [...(it.offers || [])].sort((a, b) => (a.price == null) - (b.price == null) || Number(a.price) - Number(b.price));
+  const offerTable = items => {
+    const rows = [];
+    items.forEach(it => offerRows(it).forEach((x, n) => rows.push(`<tr><td>${n ? '' : esc(it.name)}</td><td>${esc(x.vendor)}</td><td class="pre">${esc(x.product)}</td><td>${x.price !== null && x.price !== undefined && x.price !== '' ? eur(x.price) : ''} ${esc(x.price_unit)}</td><td class="url">${esc(x.link)}</td></tr>`)));
+    return rows.length ? `<h2>Anbieter und Preise</h2><table><tr><th>Artikel</th><th>Anbieter</th><th>Produkt</th><th>Preis</th><th>Link</th></tr>${rows.join("")}</table>` : "";
+  };
+  let body = "";
+  if (o.overview) {
+    const need = {};
+    tasks.filter(t => !t.done).forEach(t => t.req.forEach(r => {
+      const e = need[r.item.id] || (need[r.item.id] = {item: r.item, qty: 0});
+      e.qty = r.item.kind === "tool" ? Math.max(e.qty, r.qty) : e.qty + r.qty;
+    }));
+    const list = Object.values(need).sort((a, b) => a.item.kind.localeCompare(b.item.kind) || a.item.name.localeCompare(b.item.name));
+    body += `<div class="page"><h1>Übersicht</h1><div class="meta">${tasks.length} Aufgabe(n) · erstellt am ${today()}</div>
+    <h2>Aufgaben in Arbeitsreihenfolge</h2><table><tr><th>#</th><th>Aufgabe</th><th>Kategorie</th><th>Wiederholung</th><th>Status</th></tr>
+    ${tasks.map((t, n) => `<tr><td>${n + 1}</td><td>${esc(t.title)}</td><td>${esc(t.category)}</td><td>${rep(t)}</td><td>${status(t)}</td></tr>`).join("")}</table>
+    ${list.length ? `<h2>Bedarf der offenen Aufgaben in dieser Auswahl</h2><table><tr><th>Art</th><th>Artikel</th><th>Bedarf</th><th>Bestand</th><th>Fehlt</th>${o.offers ? '<th>Günstigstes Angebot</th>' : ''}</tr>
+    ${list.map(e => { const b = cheapest(e.item); return `<tr><td>${e.item.kind === 'tool' ? 'Werkzeug' : 'Material'}</td><td>${esc(e.item.name)}</td><td>${fmt(e.qty)} ${esc(e.item.kind === 'tool' ? '' : e.item.unit)}</td><td>${fmt(e.item.stock)}</td><td>${e.item.stock < e.qty ? '<b>' + fmt(e.qty - e.item.stock) + '</b>' : '–'}</td>${o.offers ? `<td>${b ? esc(b.vendor) + ', ' + eur(b.price) + ' ' + esc(b.price_unit) : ''}</td>` : ''}</tr>`; }).join("")}</table>
+    <div class="meta">Werkzeug wird nacheinander benutzt: Der Bedarf ist die größte Menge einer einzelnen Aufgabe.</div>` : ""}</div>`;
+  }
+  tasks.forEach((t, n) => {
+    const mats = t.req.filter(r => r.item.kind !== "tool"), tls = t.req.filter(r => r.item.kind === "tool");
+    const deps = t.dep_ids.map(i => byId(D.tasks, i)).filter(Boolean);
+    const docs = t.doc_ids.map(i => byId(D.docs, i)).filter(Boolean);
+    const all = t.req.map(r => r.item);
+    const disp = all.filter(it => it.disposal && it.disposal.trim());
+    body += `<div class="page task"><h1>${esc(t.title)}</h1>
+    <div class="meta">${t.category ? 'Kategorie: ' + esc(t.category) + ' · ' : ''}${rep(t)} · Status: ${status(t)}${t.interval_days && t.last_done ? ' · zuletzt: ' + esc(t.last_done) : ''}</div>`;
+    if (deps.length) body += `<h2>Voraussetzungen</h2><table>${deps.map(d => `<tr><td style="width:24px">${(d.done || (d.interval_days && d.last_done)) ? '✔' : box}</td><td>${esc(d.title)}</td></tr>`).join("")}</table>`;
+    if (t.description) body += `<h2>Beschreibung</h2><div class="pre">${esc(t.description)}</div>`;
+    if (mats.length) body += `<h2>Material</h2><table><tr><th style="width:24px"></th><th>Menge</th><th>Einheit</th><th>Artikel</th><th>Bestand</th><th>Hinweis</th></tr>${mats.map(r => `<tr><td>${box}</td><td>${fmt(r.qty)}</td><td>${esc(r.item.unit)}</td><td>${esc(r.item.name)}</td><td>${fmt(r.item.stock)}</td><td>${r.item.stock < r.qty ? 'fehlt ' + fmt(r.qty - r.item.stock) : 'ok'}</td></tr>`).join("")}</table>`;
+    if (tls.length) body += `<h2>Werkzeug</h2><table><tr><th style="width:24px"></th><th>Anzahl</th><th>Werkzeug</th><th>Bestand</th><th>Hinweis</th></tr>${tls.map(r => `<tr><td>${box}</td><td>${fmt(r.qty)}</td><td>${esc(r.item.name)}</td><td>${fmt(r.item.stock)}</td><td>${r.item.stock < r.qty ? 'fehlt ' + fmt(r.qty - r.item.stock) : 'ok'}</td></tr>`).join("")}</table>`;
+    if (o.offers) body += offerTable(all);
+    if (o.disp && disp.length) body += `<h2>Entsorgung / Restmengen</h2><table>${disp.map(it => `<tr><td style="width:30%"><b>${esc(it.name)}</b></td><td class="pre">${esc(it.disposal)}</td></tr>`).join("")}</table>`;
+    if (o.docs && docs.length) body += docs.map(d => `<h2>Anleitung: ${esc(d.title)}</h2>${d.content ? `<div class="pre">${esc(d.content)}</div>` : ''}${d.file_name ? `<div class="meta">Angehängte Datei: ${esc(d.file_name)} (im Bauplaner öffnen)</div>` : ''}`).join("");
+    if (o.notes) body += `<h2>Notizen</h2><div class="lines"></div><p class="done">Erledigt am: ______________ &nbsp;&nbsp; Handzeichen: ______________</p>`;
+    body += `</div>`;
+  });
+  return `<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><title>Bauplaner Aufgaben</title><style>
+  @page{size:A4;margin:14mm}
+  body{font:11pt/1.4 system-ui,Arial,sans-serif;color:#000;background:#fff;margin:0;padding:12px}
+  h1{font-size:19pt;margin:0 0 4px} h2{font-size:12pt;margin:16px 0 4px;border-bottom:1.5px solid #000;padding-bottom:2px}
+  table{width:100%;border-collapse:collapse;margin:4px 0} td,th{border:1px solid #777;padding:4px 6px;text-align:left;vertical-align:top;font-size:10pt} th{background:#eee}
+  .meta{color:#333;font-size:10pt} .pre{white-space:pre-wrap;word-wrap:break-word} .url{word-break:break-all;font-size:8.5pt}
+  .box{display:inline-block;width:13px;height:13px;border:1.5px solid #000;vertical-align:middle}
+  .lines{height:110px;border:1px solid #777;background:repeating-linear-gradient(transparent,transparent 21px,#bbb 22px)}
+  .done{margin-top:16px}
+  .page{page-break-after:always} .page:last-of-type{page-break-after:auto}
+  .bar{padding:10px;background:#f1f1f1;margin-bottom:10px}
+  @media print{.noprint{display:none} body{padding:0}}
+  </style></head><body><div class="noprint bar"><button onclick="window.print()" style="font-size:15px;padding:8px 14px">🖨 Drucken / Als PDF speichern</button> &nbsp; Im Druckdialog als Ziel „Als PDF speichern“ wählen.</div>${body}</body></html>`;
 }
 sb.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT") { clearInterval(timer); showLogin(); } });
 init();
