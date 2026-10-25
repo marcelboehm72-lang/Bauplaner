@@ -46,6 +46,9 @@ pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit;margin:6px 0}
 a{color:var(--ac)}
 .lnk{cursor:pointer;text-decoration:underline dotted}
 .offer{white-space:pre-wrap}
+table.t{width:100%;border-collapse:collapse;margin:4px 0}
+table.t td,table.t th{border:1px solid var(--bd);padding:4px 6px;font-size:13px;text-align:left;vertical-align:top}
+table.t th{background:var(--bd)}
 .sec2{margin-top:10px;font-weight:600;font-size:14px}
 #auth{max-width:380px;margin:60px auto;padding:16px}
 #app{display:none}
@@ -71,6 +74,7 @@ a{color:var(--ac)}
 <div class="modal" id="m-pset"><div class="box" id="b-pset"></div></div>
 <div class="modal" id="m-idet"><div class="box" id="b-idet"></div></div>
 <div class="modal" id="m-pdf"><div class="box" id="b-pdf"></div></div>
+<div class="modal" id="m-buy"><div class="box" id="b-buy" style="max-width:900px"></div></div>
 
 <script>
 // ===== Supabase-Zugang =====
@@ -339,6 +343,7 @@ async function delTask(id) { if (!confirm("Aufgabe wirklich löschen?")) return;
 /* ---------- Lager ---------- */
 function renderStock() {
   $("main").innerHTML = `<div class="bar"><button class="btn" onclick="editItem()">+ Neuer Artikel</button>
+    <button class="btn sec" onclick="openBuy()">🛒 Einkaufsvergleich</button>
     <button class="chip ${SF==='all'?'on':''}" onclick="SF='all';render()">Alle</button>
     <button class="chip ${SF==='miss'?'on':''}" onclick="SF='miss';render()">Nur Fehlendes</button></div>
     <div class="bar"><input id="s-q" type="search" placeholder="Lager durchsuchen …" value="${esc(SQ)}" oninput="SQ=this.value;stockList()"></div>
@@ -484,7 +489,7 @@ async function importBackup(file) {
   await sb.from("item_offers").delete().gte("id", 0);
   for (const t of ["tasks", "items", "docs"]) chkErr(await sb.from(t).delete().gte("id", 0));
   const im = await insMap("items", b.items), dm = await insMap("docs", b.docs), tm = await insMap("tasks", b.tasks);
-  const orows = (b.item_offers || []).filter(r => im[r.item_id]).map(r => ({item_id: im[r.item_id], vendor: r.vendor, product: r.product, price: r.price, price_unit: r.price_unit, link: r.link, note: r.note}));
+  const orows = (b.item_offers || []).filter(r => im[r.item_id]).map(r => ({item_id: im[r.item_id], vendor: r.vendor, product: r.product, price: r.price, price_unit: r.price_unit, link: r.link, note: r.note, shipping: r.shipping ?? null, free_from: r.free_from ?? null, content: r.content ?? null}));
   for (let k = 0; k < orows.length; k += 200) { const rr = await sb.from("item_offers").insert(orows.slice(k, k + 200)); if (rr.error) { alert("Angebote konnten nicht wiederhergestellt werden: " + rr.error.message); break; } }
   await insRows("task_items", b.task_items.filter(r => tm[r.task_id] && im[r.item_id]).map(r => ({task_id: tm[r.task_id], item_id: im[r.item_id], qty: r.qty})));
   await insRows("task_docs", b.task_docs.filter(r => tm[r.task_id] && dm[r.doc_id]).map(r => ({task_id: tm[r.task_id], doc_id: dm[r.doc_id]})));
@@ -668,13 +673,14 @@ async function copyPrompt() {
 /* ---------- Lager: Angebote und Entsorgung ---------- */
 let OFFERS_OK = true;
 const eur = n => (Math.round(Number(n) * 100) / 100).toFixed(2).replace(".", ",") + " €";
+const hasN = v => v !== null && v !== undefined && v !== "";
 function normUrl(u) {
   u = String(u || "").trim(); if (!u) return "";
   if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = "https://" + u;
   return /^https?:\/\//i.test(u) ? u : "";
 }
 function cheapest(i) {
-  const p = (i.offers || []).filter(o => o.price !== null && o.price !== undefined && o.price !== "");
+  const p = (i.offers || []).filter(o => hasN(o.price));
   return p.length ? p.reduce((a, b) => Number(a.price) <= Number(b.price) ? a : b) : null;
 }
 function itemTags(i) {
@@ -684,11 +690,12 @@ function itemTags(i) {
 function openItem(id) { renderItemDet(id, 0); $("m-idet").className = "modal on"; }
 function renderItemDet(id, offerId) {
   const i = byId(D.items, id); if (!i) return;
-  const offers = [...(i.offers || [])].sort((a, b) => (a.price == null) - (b.price == null) || Number(a.price) - Number(b.price));
+  const offers = [...(i.offers || [])].sort((a, b) => !hasN(a.price) - !hasN(b.price) || Number(a.price) - Number(b.price));
   const best = cheapest(i), o = offerId ? offers.find(x => x.id === offerId) : null;
+  const val = v => hasN(v) ? esc(String(v).replace(".", ",")) : "";
   let h = `<h3>${i.kind === 'tool' ? '🔧 ' : ''}${esc(i.name)} ${i.unit ? `<span class="mut">(${esc(i.unit)})</span>` : ''}</h3>
   <div class="mut">Bestand ${fmt(i.stock)} · Bedarf ${fmt(i.demand)} · Saldo ${fmt(i.saldo)}</div>`;
-  if (!OFFERS_OK) h += `<p class="neg">Die Tabelle für Angebote fehlt noch. Bitte update_lager2.sql im Supabase SQL Editor ausführen.</p>`;
+  if (!OFFERS_OK) h += `<p class="neg">Die Tabelle für Angebote fehlt noch. Bitte update_lager3.sql im Supabase SQL Editor ausführen.</p>`;
   h += `<div class="sec2">♻ Entsorgung / Restmengen</div>
   <textarea id="i-disp" placeholder="z. B. Restmengen kleiner 10 cm entsorgen">${esc(i.disposal)}</textarea>
   <div class="bar" style="margin-top:6px"><button class="btn" onclick="saveDisposal(${id})">Hinweis speichern</button></div>
@@ -697,15 +704,20 @@ function renderItemDet(id, offerId) {
   h += offers.map(x => `<div class="card"><div class="row"><div class="grow"><b>${esc(x.vendor)}</b>
     ${best && x.id === best.id && offers.length > 1 ? '<span class="tag ok">günstigster</span>' : ''}
     ${x.product ? `<div class="offer">${esc(x.product)}</div>` : ''}
-    <div>${x.price !== null && x.price !== undefined && x.price !== '' ? `<b>${eur(x.price)}</b>` : '<span class="mut">kein Preis</span>'} ${esc(x.price_unit)}
+    <div>${hasN(x.price) ? `<b>${eur(x.price)}</b>` : '<span class="mut">kein Preis</span>'} ${esc(x.price_unit)}
+    ${hasN(x.content) && Number(x.content) !== 1 ? ` · Inhalt ${fmt(x.content)} ${esc(i.unit)}` : ''}
     ${x.link ? ` · <a href="${esc(x.link)}" target="_blank" rel="noopener">Link</a>` : ''}</div>
+    <div class="mut">Versand: ${hasN(x.shipping) ? eur(x.shipping) : 'nicht angegeben'}${hasN(x.free_from) ? ' · gratis ab ' + eur(x.free_from) : ''}</div>
     ${x.note ? `<div class="mut offer">${esc(x.note)}</div>` : ''}</div>
     <div><button class="btn sec" onclick="renderItemDet(${id},${x.id})">✎</button> <button class="btn dng" onclick="delOffer(${x.id},${id})">✕</button></div></div></div>`).join("");
   h += `<div class="sec2">${o ? 'Angebot bearbeiten' : 'Angebot hinzufügen'}</div>
   <label>Anbieter</label><input id="o-vendor" value="${esc(o ? o.vendor : '')}" placeholder="z. B. Raiffeisen">
   <label>Produktbeschreibung</label><textarea id="o-product" placeholder="z. B. Baustahl 10 mm, Stab 6 m, B500B">${esc(o ? o.product : '')}</textarea>
-  <div class="bar"><div style="flex:1;min-width:110px"><label>Preis (€)</label><input id="o-price" inputmode="decimal" value="${o && o.price !== null && o.price !== undefined ? esc(String(o.price).replace('.', ',')) : ''}"></div>
+  <div class="bar"><div style="flex:1;min-width:110px"><label>Preis (€)</label><input id="o-price" inputmode="decimal" value="${o ? val(o.price) : ''}"></div>
   <div style="flex:2;min-width:140px"><label>Preis gilt für</label><input id="o-unit" value="${esc(o ? o.price_unit : '')}" placeholder="z. B. pro Stab 6 m"></div></div>
+  <label>Inhalt je Preiseinheit in ${esc(i.unit) || 'Lager-Einheit'} (leer = 1)</label><input id="o-content" inputmode="decimal" value="${o ? val(o.content) : ''}" placeholder="z. B. 6, wenn 1 Stab = 6 m">
+  <div class="bar"><div style="flex:1;min-width:130px"><label>Versandkosten (€)</label><input id="o-ship" inputmode="decimal" value="${o ? val(o.shipping) : ''}" placeholder="z. B. 49"></div>
+  <div style="flex:1;min-width:130px"><label>Gratis ab Warenwert (€)</label><input id="o-free" inputmode="decimal" value="${o ? val(o.free_from) : ''}" placeholder="optional"></div></div>
   <label>Link (optional)</label><input id="o-link" value="${esc(o ? o.link : '')}" placeholder="https://…">
   <label>Notiz (optional)</label><input id="o-note" value="${esc(o ? o.note : '')}">
   <div class="bar" style="margin-top:12px"><button class="btn" onclick="saveOffer(${id},${o ? o.id : 0})">${o ? 'Änderung speichern' : 'Angebot speichern'}</button>
@@ -715,24 +727,147 @@ function renderItemDet(id, offerId) {
 }
 async function saveDisposal(id) {
   const r = await sb.from("items").update({disposal: $("i-disp").value}).eq("id", id);
-  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager2.sql in Supabase ausgeführt?"); return; }
+  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager3.sql in Supabase ausgeführt?"); return; }
   await load(); renderItemDet(id, 0);
+}
+function numField(id, label) {
+  const raw = $(id).value.trim().replace(",", ".");
+  if (raw === "") return {ok: true, v: null};
+  const v = parseFloat(raw);
+  if (isNaN(v) || v < 0) { alert(label + " ist keine gültige Zahl"); return {ok: false}; }
+  return {ok: true, v};
 }
 async function saveOffer(itemId, offerId) {
   const vendor = $("o-vendor").value.trim(); if (!vendor) { alert("Anbieter fehlt"); return; }
-  const raw = $("o-price").value.trim().replace(",", "."), price = raw === "" ? null : parseFloat(raw);
-  if (raw !== "" && isNaN(price)) { alert("Der Preis ist keine Zahl"); return; }
+  const pr = numField("o-price", "Der Preis"), ct = numField("o-content", "Der Inhalt"), sh = numField("o-ship", "Die Versandkosten"), fr = numField("o-free", "Die Gratis-Grenze");
+  if (!pr.ok || !ct.ok || !sh.ok || !fr.ok) return;
+  if (ct.v !== null && ct.v <= 0) { alert("Der Inhalt muss größer als 0 sein"); return; }
   const lk = $("o-link").value.trim(), link = normUrl(lk);
   if (lk && !link) { alert("Der Link muss mit http:// oder https:// beginnen"); return; }
-  const row = {item_id: itemId, vendor, product: $("o-product").value.trim(), price, price_unit: $("o-unit").value.trim(), link, note: $("o-note").value.trim()};
+  const row = {item_id: itemId, vendor, product: $("o-product").value.trim(), price: pr.v, price_unit: $("o-unit").value.trim(), content: ct.v, shipping: sh.v, free_from: fr.v, link, note: $("o-note").value.trim()};
   const r = offerId ? await sb.from("item_offers").update(row).eq("id", offerId) : await sb.from("item_offers").insert(row);
-  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager2.sql in Supabase ausgeführt?"); return; }
+  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager3.sql in Supabase ausgeführt?"); return; }
   await load(); renderItemDet(itemId, 0);
 }
 async function delOffer(offerId, itemId) {
   if (!confirm("Angebot löschen?")) return;
   chkErr(await sb.from("item_offers").delete().eq("id", offerId));
   await load(); renderItemDet(itemId, 0);
+}
+
+/* ---------- Einkaufsvergleich ---------- */
+let BUYX = new Set();
+const vkey = v => String(v || "").trim().toLowerCase();
+function offerCost(o, need) {
+  const c = Number(o.content) > 0 ? Number(o.content) : 1;
+  const packs = Math.ceil(need / c - 1e-9);
+  return {packs, goods: packs * Number(o.price), left: Math.round((packs * c - need) * 1000) / 1000, content: c};
+}
+function planTotal(assign) {
+  const v = {};
+  for (const a of assign) {
+    if (!a) continue;
+    const k = vkey(a.offer.vendor), g = offerCost(a.offer, a.need);
+    const e = v[k] || (v[k] = {name: a.offer.vendor, lines: [], goods: 0});
+    e.lines.push({...a, ...g}); e.goods += g.goods;
+  }
+  let total = 0, ship = 0, goods = 0;
+  for (const e of Object.values(v)) {
+    let best = 0, by = null;
+    for (const l of e.lines) {
+      const free = hasN(l.offer.free_from) && e.goods >= Number(l.offer.free_from);
+      const sv = free ? 0 : Number(l.offer.shipping || 0);
+      if (sv > best) { best = sv; by = l; }
+    }
+    e.ship = best; e.shipBy = by; e.sum = e.goods + best;
+    total += e.sum; ship += best; goods += e.goods;
+  }
+  return {vendors: v, total, ship, goods};
+}
+function buyData() {
+  const needs = D.items.filter(i => i.saldo < 0).map(i => ({item: i, need: -i.saldo}));
+  const all = needs.map(n => (n.item.offers || []).filter(o => hasN(o.price)));
+  const vendorNames = {};
+  all.flat().forEach(o => { if (!vendorNames[vkey(o.vendor)]) vendorNames[vkey(o.vendor)] = o.vendor; });
+  const opts = all.map(os => os.filter(o => !BUYX.has(vkey(o.vendor))));
+  const noOffer = needs.filter((n, k) => !opts[k].length);
+  const idxOf = needs.map((n, k) => k).filter(k => opts[k].length);
+  const N = idxOf.map(k => needs[k]), O = idxOf.map(k => opts[k]);
+  const mk = idx => N.map((n, k) => idx[k] < 0 ? null : {item: n.item, need: n.need, offer: O[k][idx[k]]});
+  const cost = idx => planTotal(mk(idx)).total;
+  const startA = O.map((os, k) => os.reduce((bi, o, j) => offerCost(o, N[k].need).goods < offerCost(os[bi], N[k].need).goods ? j : bi, 0));
+  const cand = [startA];
+  [...new Set(O.flat().map(o => vkey(o.vendor)))].forEach(vk => cand.push(O.map((os, k) => { const j = os.findIndex(o => vkey(o.vendor) === vk); return j >= 0 ? j : startA[k]; })));
+  let best = null;
+  for (const st of cand) {
+    const idx = [...st]; let cur = cost(idx), improved = true, guard = 0;
+    while (improved && guard++ < 50) {
+      improved = false;
+      for (let k = 0; k < idx.length; k++) for (let j = 0; j < O[k].length; j++) {
+        if (j === idx[k]) continue;
+        const old = idx[k]; idx[k] = j; const c = cost(idx);
+        if (c < cur - 1e-9) { cur = c; improved = true; } else idx[k] = old;
+      }
+    }
+    if (!best || cur < best.cost) best = {idx, cost: cur};
+  }
+  const plan = N.length ? planTotal(mk(best.idx)) : null;
+  const cheapGoods = N.length ? planTotal(mk(startA)) : null;
+  const singles = [];
+  if (N.length) [...new Set(O.flat().map(o => vkey(o.vendor)))].forEach(vk => {
+    const idx = O.map(os => os.findIndex(o => vkey(o.vendor) === vk));
+    if (idx.every(j => j >= 0)) { const p = planTotal(mk(idx)); singles.push({name: vendorNames[vk], ...p}); }
+  });
+  singles.sort((a, b) => a.total - b.total);
+  return {needs, noOffer, plan, cheapGoods, singles, vendorNames};
+}
+function buyHtml(d) {
+  if (!d.needs.length) return `<p class="mut">Nichts fehlt: Kein Artikel hat einen negativen Saldo.</p>`;
+  let h = "";
+  if (d.plan) {
+    for (const e of Object.values(d.plan.vendors).sort((a, b) => a.name.localeCompare(b.name))) {
+      h += `<h3>${esc(e.name)}</h3><table class="t"><tr><th>Artikel</th><th>Fehlt</th><th>Kauf</th><th>Summe</th><th>Rest</th></tr>
+      ${e.lines.map(l => `<tr><td>${esc(l.item.name)}${hasN(l.offer.product) && l.offer.product ? `<div class="mut offer">${esc(l.offer.product)}</div>` : ''}</td><td>${fmt(l.need)} ${esc(l.item.unit)}</td>
+      <td>${l.packs} × ${eur(l.offer.price)} ${esc(l.offer.price_unit)}</td><td>${eur(l.goods)}</td>
+      <td>${l.left > 0 ? fmt(l.left) + ' ' + esc(l.item.unit) + (l.item.disposal ? `<div class="mut">♻ ${esc(l.item.disposal)}</div>` : '') : '–'}</td></tr>`).join("")}</table>
+      <div>Warenwert <b>${eur(e.goods)}</b> · Versand <b>${eur(e.ship)}</b>${e.shipBy ? ` <span class="mut">(höchster Versand: ${esc(e.shipBy.item.name)}${hasN(e.shipBy.offer.free_from) && e.ship > 0 ? ', gratis ab ' + eur(e.shipBy.offer.free_from) : ''})</span>` : e.goods > 0 ? ' <span class="mut">(frei oder nicht angegeben)</span>' : ''} · Summe <b>${eur(e.sum)}</b></div>`;
+    }
+    h += `<h3>Gesamt: ${eur(d.plan.total)}</h3><div class="mut">Davon Ware ${eur(d.plan.goods)}, Versand ${eur(d.plan.ship)}.</div>`;
+    h += `<h3>Vergleich</h3><table class="t"><tr><th>Variante</th><th>Ware</th><th>Versand</th><th>Gesamt</th></tr>
+    <tr><td><b>Empfehlung (günstigste Gesamtsumme)</b></td><td>${eur(d.plan.goods)}</td><td>${eur(d.plan.ship)}</td><td><b>${eur(d.plan.total)}</b></td></tr>
+    <tr><td>Jeder Artikel zum günstigsten Warenpreis</td><td>${eur(d.cheapGoods.goods)}</td><td>${eur(d.cheapGoods.ship)}</td><td>${eur(d.cheapGoods.total)}</td></tr>
+    ${d.singles.map(s => `<tr><td>Alles bei ${esc(s.name)}</td><td>${eur(s.goods)}</td><td>${eur(s.ship)}</td><td>${eur(s.total)}</td></tr>`).join("")}</table>`;
+  }
+  if (d.noOffer.length) h += `<h3>Ohne Angebot</h3><div>${d.noOffer.map(n => `${esc(n.item.name)} (${fmt(n.need)} ${esc(n.item.unit)})`).join(", ")}</div>`;
+  return h;
+}
+function openBuy() { renderBuy(); $("m-buy").className = "modal on"; }
+let BUYKEYS = [];
+function buyTog(n, on) { const k = BUYKEYS[n]; if (on) BUYX.delete(k); else BUYX.add(k); renderBuy(); }
+function renderBuy() {
+  const d = buyData();
+  const names = Object.entries(d.vendorNames).sort((a, b) => a[1].localeCompare(b[1]));
+  BUYKEYS = names.map(x => x[0]);
+  let h = `<h3>🛒 Einkaufsvergleich</h3>
+  <p class="mut">Grundlage sind alle Artikel mit negativem Saldo (Fehlmenge). Versand je Anbieter = der höchste Versand der dort gekauften Artikel. Er entfällt, wenn der Warenwert die Gratis-Grenze des jeweiligen Angebots erreicht. Der Vorschlag ist eine Näherung und prüft viele, aber nicht alle Kombinationen.</p>`;
+  if (!OFFERS_OK) h += `<p class="neg">Die Tabelle für Angebote fehlt noch. Bitte update_lager3.sql ausführen.</p>`;
+  if (names.length) h += `<div class="sec2">Anbieter berücksichtigen</div><div class="bar">${names.map(([k, n], x) => `<label style="font-weight:400;display:flex;gap:4px;align-items:center;margin:0"><input type="checkbox" ${BUYX.has(k) ? '' : 'checked'} onchange="buyTog(${x},this.checked)"> ${esc(n)}</label>`).join("")}</div>`;
+  h += buyHtml(d);
+  h += `<div class="bar" style="margin-top:14px"><button class="btn" onclick="printBuy()">🖨 Drucken / PDF</button><button class="btn sec" onclick="closeM('buy')">Schließen</button></div>`;
+  $("b-buy").innerHTML = h;
+}
+function printBuy() {
+  const w = window.open("", "_blank");
+  if (!w) { alert("Das Fenster wurde blockiert. Bitte Pop-ups für diese Seite erlauben."); return; }
+  w.document.open();
+  w.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><title>Einkaufsvergleich</title><style>
+  @page{size:A4;margin:14mm} body{font:11pt/1.4 system-ui,Arial,sans-serif;color:#000;background:#fff;padding:12px}
+  h1{font-size:18pt;margin:0 0 4px} h3{font-size:12pt;margin:14px 0 4px;border-bottom:1.5px solid #000}
+  table.t{width:100%;border-collapse:collapse;margin:4px 0} table.t td,table.t th{border:1px solid #777;padding:4px 6px;font-size:10pt;text-align:left;vertical-align:top} table.t th{background:#eee}
+  .mut{color:#333;font-size:9.5pt} .offer{white-space:pre-wrap} .bar{padding:10px;background:#f1f1f1;margin-bottom:10px} @media print{.noprint{display:none} body{padding:0}}
+  </style></head><body><div class="noprint bar"><button onclick="window.print()" style="font-size:15px;padding:8px 14px">🖨 Drucken / Als PDF speichern</button></div>
+  <h1>Einkaufsvergleich</h1><div class="mut">erstellt am ${today()}</div>${buyHtml(buyData())}</body></html>`);
+  w.document.close();
 }
 
 /* ---------- PDF / Druck ---------- */
@@ -781,11 +916,11 @@ function buildPrintHtml(tasks, o) {
   const status = t => t.done ? "erledigt" + (t.done_date ? " am " + t.done_date : "") : t.blocked_by.length ? "wartet auf Voraussetzungen" : t.missing.length ? "Material/Werkzeug fehlt" : "machbar";
   const rep = t => t.interval_days ? "alle " + t.interval_days + " Tage" : "einmalig";
   const box = '<span class="box"></span>';
-  const offerRows = it => [...(it.offers || [])].sort((a, b) => (a.price == null) - (b.price == null) || Number(a.price) - Number(b.price));
+  const offerRows = it => [...(it.offers || [])].sort((a, b) => !hasN(a.price) - !hasN(b.price) || Number(a.price) - Number(b.price));
   const offerTable = items => {
     const rows = [];
-    items.forEach(it => offerRows(it).forEach((x, n) => rows.push(`<tr><td>${n ? '' : esc(it.name)}</td><td>${esc(x.vendor)}</td><td class="pre">${esc(x.product)}</td><td>${x.price !== null && x.price !== undefined && x.price !== '' ? eur(x.price) : ''} ${esc(x.price_unit)}</td><td class="url">${esc(x.link)}</td></tr>`)));
-    return rows.length ? `<h2>Anbieter und Preise</h2><table><tr><th>Artikel</th><th>Anbieter</th><th>Produkt</th><th>Preis</th><th>Link</th></tr>${rows.join("")}</table>` : "";
+    items.forEach(it => offerRows(it).forEach((x, n) => rows.push(`<tr><td>${n ? '' : esc(it.name)}</td><td>${esc(x.vendor)}</td><td class="pre">${esc(x.product)}</td><td>${hasN(x.price) ? eur(x.price) : ''} ${esc(x.price_unit)}</td><td>${hasN(x.shipping) ? eur(x.shipping) : ''}${hasN(x.free_from) ? '<br>gratis ab ' + eur(x.free_from) : ''}</td><td class="url">${esc(x.link)}</td></tr>`)));
+    return rows.length ? `<h2>Anbieter und Preise</h2><table><tr><th>Artikel</th><th>Anbieter</th><th>Produkt</th><th>Preis</th><th>Versand</th><th>Link</th></tr>${rows.join("")}</table>` : "";
   };
   let body = "";
   if (o.overview) {
