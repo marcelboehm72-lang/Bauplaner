@@ -75,6 +75,7 @@ table.t th{background:var(--bd)}
 <div class="modal" id="m-idet"><div class="box" id="b-idet"></div></div>
 <div class="modal" id="m-pdf"><div class="box" id="b-pdf"></div></div>
 <div class="modal" id="m-buy"><div class="box" id="b-buy" style="max-width:900px"></div></div>
+<div class="modal" id="m-local"><div class="box" id="b-local" style="max-width:800px"></div></div>
 
 <script>
 // ===== Supabase-Zugang =====
@@ -159,6 +160,7 @@ async function load() {
     fetchAll("docs", "id"), fetchAll("task_docs"), fetchAll("deps"), fetchAll("item_offers", "id")]);
   const tasks = chkErr(t), items = chkErr(it), tis = chkErr(ti), docs = chkErr(d), tdocs = chkErr(td), deps = chkErr(dp);
   OFFERS_OK = !ofr.error; const offers = ofr.error ? [] : ofr.data;
+  HAS_FORMULA = offers.length > 0 && "price_formula" in offers[0];
   items.forEach(i => i.offers = offers.filter(o => o.item_id === i.id));
   items.sort((a, b) => a.name.localeCompare(b.name)); docs.sort((a, b) => a.title.localeCompare(b.title));
   const byid = {}; tasks.forEach(x => byid[x.id] = x);
@@ -343,6 +345,7 @@ async function delTask(id) { if (!confirm("Aufgabe wirklich löschen?")) return;
 /* ---------- Lager ---------- */
 function renderStock() {
   $("main").innerHTML = `<div class="bar"><button class="btn" onclick="editItem()">+ Neuer Artikel</button>
+    <button class="btn sec" onclick="openLocal()">🏪 Preise vor Ort</button>
     <button class="btn sec" onclick="openBuy()">🛒 Einkaufsvergleich</button>
     <button class="chip ${SF==='all'?'on':''}" onclick="SF='all';render()">Alle</button>
     <button class="chip ${SF==='miss'?'on':''}" onclick="SF='miss';render()">Nur Fehlendes</button></div>
@@ -489,7 +492,7 @@ async function importBackup(file) {
   await sb.from("item_offers").delete().gte("id", 0);
   for (const t of ["tasks", "items", "docs"]) chkErr(await sb.from(t).delete().gte("id", 0));
   const im = await insMap("items", b.items), dm = await insMap("docs", b.docs), tm = await insMap("tasks", b.tasks);
-  const orows = (b.item_offers || []).filter(r => im[r.item_id]).map(r => ({item_id: im[r.item_id], vendor: r.vendor, product: r.product, price: r.price, price_unit: r.price_unit, link: r.link, note: r.note, shipping: r.shipping ?? null, free_from: r.free_from ?? null, content: r.content ?? null, decision: r.decision ?? ""}));
+  const orows = (b.item_offers || []).filter(r => im[r.item_id]).map(r => ({item_id: im[r.item_id], vendor: r.vendor, product: r.product, price: r.price, price_unit: r.price_unit, link: r.link, note: r.note, shipping: r.shipping ?? null, free_from: r.free_from ?? null, content: r.content ?? null, decision: r.decision ?? "", ...(r.price_formula ? {price_formula: r.price_formula} : {})}));
   for (let k = 0; k < orows.length; k += 200) { const rr = await sb.from("item_offers").insert(orows.slice(k, k + 200)); if (rr.error) { alert("Angebote konnten nicht wiederhergestellt werden: " + rr.error.message); break; } }
   await insRows("task_items", b.task_items.filter(r => tm[r.task_id] && im[r.item_id]).map(r => ({task_id: tm[r.task_id], item_id: im[r.item_id], qty: r.qty})));
   await insRows("task_docs", b.task_docs.filter(r => tm[r.task_id] && dm[r.doc_id]).map(r => ({task_id: tm[r.task_id], doc_id: dm[r.doc_id]})));
@@ -671,7 +674,7 @@ async function copyPrompt() {
 }
 
 /* ---------- Lager: Angebote und Entsorgung ---------- */
-let OFFERS_OK = true;
+let OFFERS_OK = true, HAS_FORMULA = false;
 const eur = n => (Math.round(Number(n) * 100) / 100).toFixed(2).replace(".", ",") + " €";
 const hasN = v => v !== null && v !== undefined && v !== "";
 function normUrl(u) {
@@ -696,7 +699,7 @@ function itemTags(i) {
 async function setDecision(offerId, itemId, val) {
   if (val === "take") await sb.from("item_offers").update({decision: ""}).eq("item_id", itemId).eq("decision", "take");
   const r = await sb.from("item_offers").update({decision: val}).eq("id", offerId);
-  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager4.sql in Supabase ausgeführt?"); return; }
+  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager5.sql in Supabase ausgeführt?"); return; }
   await load();
   if ($("m-idet").className.includes("on")) renderItemDet(itemId, 0);
   if ($("m-buy").className.includes("on")) renderBuy();
@@ -709,7 +712,7 @@ function renderItemDet(id, offerId) {
   const val = v => hasN(v) ? esc(String(v).replace(".", ",")) : "";
   let h = `<h3>${i.kind === 'tool' ? '🔧 ' : ''}${esc(i.name)} ${i.unit ? `<span class="mut">(${esc(i.unit)})</span>` : ''}</h3>
   <div class="mut">Bestand ${fmt(i.stock)} · Bedarf ${fmt(i.demand)} · Saldo ${fmt(i.saldo)}</div>`;
-  if (!OFFERS_OK) h += `<p class="neg">Die Tabelle für Angebote fehlt noch. Bitte update_lager3.sql im Supabase SQL Editor ausführen.</p>`;
+  if (!OFFERS_OK) h += `<p class="neg">Die Tabelle für Angebote fehlt noch. Bitte update_lager5.sql im Supabase SQL Editor ausführen.</p>`;
   h += `<div class="sec2">♻ Entsorgung / Restmengen</div>
   <textarea id="i-disp" placeholder="z. B. Restmengen kleiner 10 cm entsorgen">${esc(i.disposal)}</textarea>
   <div class="bar" style="margin-top:6px"><button class="btn" onclick="saveDisposal(${id})">Hinweis speichern</button></div>
@@ -718,7 +721,7 @@ function renderItemDet(id, offerId) {
   h += offers.map(x => `<div class="card" style="${x.decision === 'skip' ? 'opacity:.55;' : ''}${x.decision === 'take' ? 'border-color:var(--ok);border-width:2px;' : ''}"><div class="row"><div class="grow"><b>${esc(x.vendor)}</b>${x.decision === 'take' ? ' <span class="tag ok">✓ nehme ich</span>' : ''}${x.decision === 'skip' ? ' <span class="tag bad">✗ nehme ich nicht</span>' : ''}
     ${best && x.id === best.id && offers.length > 1 ? '<span class="tag ok">günstigster</span>' : ''}
     ${x.product ? `<div class="offer">${esc(x.product)}</div>` : ''}
-    <div>${hasN(x.price) ? `<b>${eur(x.price)}</b>` : '<span class="mut">kein Preis</span>'} ${esc(x.price_unit)}
+    <div>${hasN(x.price) ? `<b>${eur(x.price)}</b>` : '<span class="mut">kein Preis</span>'}${x.price_formula ? ` <span class="mut">(${esc(x.price_formula)})</span>` : ''} ${esc(x.price_unit)}
     ${hasN(x.content) && hasN(x.price) && Number(x.content) !== 1 ? ` · Inhalt ${fmt(x.content)} ${esc(i.unit)} (${eur(unitPrice(x))} je ${esc(i.unit)})` : ''}
     ${x.link ? ` · <a href="${esc(x.link)}" target="_blank" rel="noopener">Link</a>` : ''}</div>
     <div class="mut">Versand: ${hasN(x.shipping) ? eur(x.shipping) : 'nicht angegeben'}${hasN(x.free_from) ? ' · gratis ab ' + eur(x.free_from) : ''}</div>
@@ -728,7 +731,7 @@ function renderItemDet(id, offerId) {
   h += `<div class="sec2">${o ? 'Angebot bearbeiten' : 'Angebot hinzufügen'}</div>
   <label>Anbieter</label><input id="o-vendor" value="${esc(o ? o.vendor : '')}" placeholder="z. B. Raiffeisen">
   <label>Produktbeschreibung</label><textarea id="o-product" placeholder="z. B. Baustahl 10 mm, Stab 6 m, B500B">${esc(o ? o.product : '')}</textarea>
-  <div class="bar"><div style="flex:1;min-width:110px"><label>Preis (€)</label><input id="o-price" inputmode="decimal" value="${o ? val(o.price) : ''}"></div>
+  <div class="bar"><div style="flex:1;min-width:110px"><label>Preis (€) oder Formel</label><input id="o-price" placeholder="z. B. 12,50 oder 25/2" value="${o ? (o.price_formula ? esc(o.price_formula) : val(o.price)) : ''}"></div>
   <div style="flex:2;min-width:140px"><label>Preis gilt für</label><input id="o-unit" value="${esc(o ? o.price_unit : '')}" placeholder="z. B. pro Stab 6 m"></div></div>
   <label>Inhalt je Preiseinheit in ${esc(i.unit) || 'Lager-Einheit'} (leer = 1)</label><input id="o-content" inputmode="decimal" value="${o ? val(o.content) : ''}" placeholder="z. B. 6, wenn 1 Stab = 6 m">
   <div class="bar"><div style="flex:1;min-width:130px"><label>Versandkosten (€)</label><input id="o-ship" inputmode="decimal" value="${o ? val(o.shipping) : ''}" placeholder="z. B. 49"></div>
@@ -742,7 +745,7 @@ function renderItemDet(id, offerId) {
 }
 async function saveDisposal(id) {
   const r = await sb.from("items").update({disposal: $("i-disp").value}).eq("id", id);
-  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager3.sql in Supabase ausgeführt?"); return; }
+  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager5.sql in Supabase ausgeführt?"); return; }
   await load(); renderItemDet(id, 0);
 }
 function numField(id, label) {
@@ -754,14 +757,15 @@ function numField(id, label) {
 }
 async function saveOffer(itemId, offerId) {
   const vendor = $("o-vendor").value.trim(); if (!vendor) { alert("Anbieter fehlt"); return; }
-  const pr = numField("o-price", "Der Preis"), ct = numField("o-content", "Der Inhalt"), sh = numField("o-ship", "Die Versandkosten"), fr = numField("o-free", "Die Gratis-Grenze");
+  const pr = priceField(), ct = numField("o-content", "Der Inhalt"), sh = numField("o-ship", "Die Versandkosten"), fr = numField("o-free", "Die Gratis-Grenze");
   if (!pr.ok || !ct.ok || !sh.ok || !fr.ok) return;
   if (ct.v !== null && ct.v <= 0) { alert("Der Inhalt muss größer als 0 sein"); return; }
   const lk = $("o-link").value.trim(), link = normUrl(lk);
   if (lk && !link) { alert("Der Link muss mit http:// oder https:// beginnen"); return; }
   const row = {item_id: itemId, vendor, product: $("o-product").value.trim(), price: pr.v, price_unit: $("o-unit").value.trim(), content: ct.v, shipping: sh.v, free_from: fr.v, link, note: $("o-note").value.trim()};
+  if (pr.f !== null || HAS_FORMULA) row.price_formula = pr.f;
   const r = offerId ? await sb.from("item_offers").update(row).eq("id", offerId) : await sb.from("item_offers").insert(row);
-  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager3.sql in Supabase ausgeführt?"); return; }
+  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager5.sql in Supabase ausgeführt?"); return; }
   await load(); renderItemDet(itemId, 0);
 }
 async function delOffer(offerId, itemId) {
@@ -865,7 +869,7 @@ function renderBuy() {
   BUYKEYS = names.map(x => x[0]);
   let h = `<h3>🛒 Einkaufsvergleich</h3>
   <p class="mut">Grundlage sind alle Artikel mit negativem Saldo (Fehlmenge). Versand je Anbieter = der höchste Versand der dort gekauften Artikel. Er entfällt, wenn der Warenwert die Gratis-Grenze des jeweiligen Angebots erreicht. Der Vorschlag ist eine Näherung und prüft viele, aber nicht alle Kombinationen.</p>`;
-  if (!OFFERS_OK) h += `<p class="neg">Die Tabelle für Angebote fehlt noch. Bitte update_lager3.sql ausführen.</p>`;
+  if (!OFFERS_OK) h += `<p class="neg">Die Tabelle für Angebote fehlt noch. Bitte update_lager5.sql ausführen.</p>`;
   if (names.length) h += `<div class="sec2">Anbieter berücksichtigen</div><div class="bar">${names.map(([k, n], x) => `<label style="font-weight:400;display:flex;gap:4px;align-items:center;margin:0"><input type="checkbox" ${BUYX.has(k) ? '' : 'checked'} onchange="buyTog(${x},this.checked)"> ${esc(n)}</label>`).join("")}</div>`;
   h += buyHtml(d);
   h += `<div class="bar" style="margin-top:14px"><button class="btn" onclick="printBuy()">🖨 Drucken / PDF</button><button class="btn sec" onclick="closeM('buy')">Schließen</button></div>`;
@@ -983,6 +987,130 @@ function buildPrintHtml(tasks, o) {
   .bar{padding:10px;background:#f1f1f1;margin-bottom:10px}
   @media print{.noprint{display:none} body{padding:0}}
   </style></head><body><div class="noprint bar"><button onclick="window.print()" style="font-size:15px;padding:8px 14px">🖨 Drucken / Als PDF speichern</button> &nbsp; Im Druckdialog als Ziel „Als PDF speichern“ wählen.</div>${body}</body></html>`;
+}
+
+/* ---------- Formeln und Preise vor Ort ---------- */
+function evalFormula(str) {
+  const src = String(str).replace(/\s+/g, "").replace(/€/g, "").replace(/,/g, ".").replace(/[x×]/gi, "*").replace(/:/g, "/");
+  let p = 0;
+  const peek = () => src[p];
+  const num = () => { const m = /^(\d*\.\d+|\d+\.?)/.exec(src.slice(p)); if (!m) return NaN; p += m[0].length; return parseFloat(m[0]); };
+  const factor = () => {
+    if (peek() === "(") { p++; const v = expr(); if (peek() !== ")") return NaN; p++; return v; }
+    if (peek() === "-") { p++; return -factor(); }
+    if (peek() === "+") { p++; return factor(); }
+    return num();
+  };
+  const term = () => { let v = factor(); while (peek() === "*" || peek() === "/") { const op = src[p++]; const r = factor(); v = op === "*" ? v * r : v / r; } return v; };
+  const expr = () => { let v = term(); while (peek() === "+" || peek() === "-") { const op = src[p++]; const r = term(); v = op === "+" ? v + r : v - r; } return v; };
+  if (!src) return NaN;
+  const v = expr();
+  return p === src.length && isFinite(v) && v >= 0 ? Math.round(v * 10000) / 10000 : NaN;
+}
+function priceField() {
+  const raw = $("o-price").value.trim();
+  if (raw === "") return {ok: true, v: null, f: null};
+  const v = evalFormula(raw);
+  if (isNaN(v)) { alert("Der Preis oder die Formel ist ungültig"); return {ok: false}; }
+  return {ok: true, v, f: /^\d+([.,]\d+)?$/.test(raw) ? null : raw};
+}
+const parseNum = x => parseFloat(String(x ?? "").replace(",", "."));
+let LOC = {vendor: "", ship: "0", free: "", note: "", all: false, q: "", vals: {}, vis: []};
+function knownVendors() {
+  const m = {};
+  D.items.forEach(i => (i.offers || []).forEach(o => { const k = vkey(o.vendor); if (k && !m[k]) m[k] = o.vendor; }));
+  return m;
+}
+function openLocal() {
+  LOC = {vendor: LOC.vendor || "", ship: "0", free: "", note: "Vor Ort " + new Date().toLocaleDateString("de-DE"), all: false, q: "", vals: {}, vis: []};
+  renderLocal(); $("m-local").className = "modal on";
+}
+function renderLocal() {
+  const kv = knownVendors();
+  $("b-local").innerHTML = `<h3>🏪 Preise vor Ort erfassen</h3>
+  <p class="mut">Trage den Markt einmal ein und dann pro Artikel den Preis, auch als Formel (z. B. 25/2). Leere Zeilen werden übersprungen. Hat der Markt für einen Artikel schon ein Angebot, wird es aktualisiert.</p>
+  <label>Markt / Anbieter</label><input id="loc-vendor" list="loc-vendors" value="${esc(LOC.vendor)}" placeholder="z. B. Raiffeisen" oninput="LOC.vendor=this.value;updateAllLocal()" autocomplete="off">
+  <datalist id="loc-vendors">${Object.values(kv).sort().map(n => `<option value="${esc(n)}">`).join("")}</datalist>
+  <div class="bar"><div style="flex:1;min-width:120px"><label>Versand (€)</label><input id="loc-ship" inputmode="decimal" value="${esc(LOC.ship)}" oninput="LOC.ship=this.value"></div>
+  <div style="flex:1;min-width:120px"><label>Gratis ab (€)</label><input id="loc-free" inputmode="decimal" value="${esc(LOC.free)}" placeholder="optional" oninput="LOC.free=this.value"></div></div>
+  <label>Notiz</label><input id="loc-note" value="${esc(LOC.note)}" oninput="LOC.note=this.value">
+  <div class="bar" style="margin-top:10px"><input id="loc-q" type="search" placeholder="Artikel suchen …" value="${esc(LOC.q)}" oninput="LOC.q=this.value;renderLocalList()" style="flex:1;min-width:160px">
+  <label style="font-weight:400;display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" ${LOC.all ? 'checked' : ''} onchange="LOC.all=this.checked;renderLocalList()"> alle Artikel zeigen</label></div>
+  <div id="loc-list"></div>
+  <div class="bar" style="margin-top:14px"><button class="btn" onclick="saveLocal()">Preise speichern</button><button class="btn sec" onclick="closeM('local')">Abbrechen</button></div>`;
+  renderLocalList();
+}
+function renderLocalList() {
+  const q = LOC.q.trim();
+  const items = D.items.filter(i => (LOC.all || i.saldo < 0 || (LOC.vals[i.id] && (LOC.vals[i.id].price || "").trim())) && (!q || hit(i, q)))
+    .sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  LOC.vis = items.map(i => i.id);
+  const v = id => LOC.vals[id] || {};
+  $("loc-list").innerHTML = `<div class="mut">${items.length} Artikel${LOC.all ? '' : ' mit Bedarf'}</div>` + (items.map(i => `<div class="card"><b>${i.kind === 'tool' ? '🔧 ' : ''}${esc(i.name)}</b> <span class="mut">${i.unit ? '(' + esc(i.unit) + ') ' : ''}${i.saldo < 0 ? '· fehlt ' + fmt(-i.saldo) : ''}</span>
+    <div class="bar" style="margin:6px 0 4px"><input placeholder="Preis oder Formel" value="${esc(v(i.id).price || '')}" oninput="locIn(${i.id},'price',this.value)" style="flex:2;min-width:130px">
+    <input placeholder="gilt für (z. B. pro Stab)" value="${esc(v(i.id).unit || '')}" oninput="locIn(${i.id},'unit',this.value)" style="flex:2;min-width:130px">
+    <input placeholder="Inhalt" inputmode="decimal" value="${esc(v(i.id).content || '')}" oninput="locIn(${i.id},'content',this.value)" style="flex:1;min-width:80px"></div>
+    <input placeholder="Produktbeschreibung (optional)" value="${esc(v(i.id).product || '')}" oninput="locIn(${i.id},'product',this.value)">
+    <div class="mut" id="li-${i.id}" style="margin-top:4px"></div></div>`).join("") || '<p class="mut">Keine Artikel.</p>');
+  updateAllLocal();
+}
+function locIn(id, key, val) { (LOC.vals[id] = LOC.vals[id] || {})[key] = val; updateLocalInfo(id); }
+function updateAllLocal() { LOC.vis.forEach(updateLocalInfo); }
+function updateLocalInfo(id) {
+  const el = $("li-" + id), i = byId(D.items, id); if (!el || !i) return;
+  const v = LOC.vals[id] || {}, kv = knownVendors(), vk = vkey(kv[vkey(LOC.vendor)] || LOC.vendor);
+  const ex = vk ? (i.offers || []).find(o => vkey(o.vendor) === vk) : null;
+  const raw = (v.price || "").trim(), parts = [];
+  let p = NaN;
+  if (raw) { p = evalFormula(raw); parts.push(isNaN(p) ? '<span class="neg">Formel ungültig</span>' : '= <b>' + eur(p) + '</b>'); }
+  if (ex && hasN(ex.price)) parts.push('bisher hier: ' + eur(ex.price) + (ex.price_unit ? ' ' + esc(ex.price_unit) : ''));
+  const others = (i.offers || []).filter(o => vkey(o.vendor) !== vk && hasN(o.price) && o.decision !== "skip");
+  const bo = others.length ? others.reduce((a, b) => unitPrice(a) <= unitPrice(b) ? a : b) : null;
+  if (bo) parts.push('günstigster anderer: ' + eur(bo.price) + ' ' + esc(bo.vendor) + (Number(bo.content) > 0 && Number(bo.content) !== 1 ? ' (' + eur(unitPrice(bo)) + ' je ' + esc(i.unit) + ')' : ''));
+  if (!isNaN(p) && bo) {
+    const cn = parseNum(v.content), c = cn > 0 ? cn : (ex && Number(ex.content) > 0 ? Number(ex.content) : 1), u = p / c;
+    parts.push(u < unitPrice(bo) - 1e-9 ? '<span class="tag ok">günstiger</span>' : u > unitPrice(bo) + 1e-9 ? '<span class="tag bad">teurer</span>' : '<span class="tag">gleich</span>');
+  }
+  el.innerHTML = parts.join(" · ");
+}
+async function saveLocal() {
+  const kv = knownVendors(), vendor = (kv[vkey(LOC.vendor)] || LOC.vendor).trim();
+  if (!vendor) { alert("Bitte Markt oder Anbieter eintragen."); return; }
+  const shRaw = String(LOC.ship).trim(), sh = shRaw === "" ? 0 : parseNum(shRaw);
+  if (isNaN(sh) || sh < 0) { alert("Der Versand ist keine gültige Zahl."); return; }
+  const frRaw = String(LOC.free).trim(), fr = frRaw === "" ? null : parseNum(frRaw);
+  if (fr !== null && (isNaN(fr) || fr < 0)) { alert("Die Gratis-Grenze ist keine gültige Zahl."); return; }
+  const rows = [], bad = [];
+  for (const [sid, v] of Object.entries(LOC.vals)) {
+    const raw = (v.price || "").trim(); if (!raw) continue;
+    const i = byId(D.items, +sid); if (!i) continue;
+    const p = evalFormula(raw);
+    if (isNaN(p)) { bad.push(i.name); continue; }
+    let c = null;
+    if ((v.content || "").trim() !== "") { c = parseNum(v.content); if (!(c > 0)) { bad.push(i.name + " (Inhalt)"); continue; } }
+    rows.push({i, p, raw, v, c});
+  }
+  if (bad.length) { alert("Nichts gespeichert. Ungültig bei:\n" + bad.join("\n")); return; }
+  if (!rows.length) { alert("Es wurde kein Preis eingetragen."); return; }
+  const ins = [], upd = [];
+  for (const r of rows) {
+    const ex = (r.i.offers || []).find(o => vkey(o.vendor) === vkey(vendor));
+    const isF = !/^\d+([.,]\d+)?$/.test(r.raw);
+    const base = {price: r.p, shipping: sh, note: LOC.note.trim()};
+    if (fr !== null) base.free_from = fr;
+    if ((r.v.unit || "").trim()) base.price_unit = r.v.unit.trim();
+    if (r.c !== null) base.content = r.c;
+    if ((r.v.product || "").trim()) base.product = r.v.product.trim();
+    if (isF || HAS_FORMULA) base.price_formula = isF ? r.raw : null;
+    if (ex) upd.push({id: ex.id, row: base}); else ins.push({item_id: r.i.id, vendor, product: "", price_unit: "", link: "", ...base});
+  }
+  let err = null;
+  if (ins.length) { const e = (await sb.from("item_offers").insert(ins)).error; if (e) err = e; }
+  for (const u of upd) { if (err) break; const e = (await sb.from("item_offers").update(u.row).eq("id", u.id)).error; if (e) err = e; }
+  if (err) { alert("Fehler beim Speichern: " + err.message + "\n\nHast du update_lager5.sql in Supabase ausgeführt?"); await load(); return; }
+  LOC.vendor = vendor;
+  await load(); closeM("local");
+  alert(rows.length + " Preis(e) bei " + vendor + " gespeichert (" + ins.length + " neu, " + upd.length + " aktualisiert).");
 }
 sb.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT") { clearInterval(timer); showLogin(); } });
 init();
