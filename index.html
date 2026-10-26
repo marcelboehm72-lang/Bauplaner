@@ -489,7 +489,7 @@ async function importBackup(file) {
   await sb.from("item_offers").delete().gte("id", 0);
   for (const t of ["tasks", "items", "docs"]) chkErr(await sb.from(t).delete().gte("id", 0));
   const im = await insMap("items", b.items), dm = await insMap("docs", b.docs), tm = await insMap("tasks", b.tasks);
-  const orows = (b.item_offers || []).filter(r => im[r.item_id]).map(r => ({item_id: im[r.item_id], vendor: r.vendor, product: r.product, price: r.price, price_unit: r.price_unit, link: r.link, note: r.note, shipping: r.shipping ?? null, free_from: r.free_from ?? null, content: r.content ?? null}));
+  const orows = (b.item_offers || []).filter(r => im[r.item_id]).map(r => ({item_id: im[r.item_id], vendor: r.vendor, product: r.product, price: r.price, price_unit: r.price_unit, link: r.link, note: r.note, shipping: r.shipping ?? null, free_from: r.free_from ?? null, content: r.content ?? null, decision: r.decision ?? ""}));
   for (let k = 0; k < orows.length; k += 200) { const rr = await sb.from("item_offers").insert(orows.slice(k, k + 200)); if (rr.error) { alert("Angebote konnten nicht wiederhergestellt werden: " + rr.error.message); break; } }
   await insRows("task_items", b.task_items.filter(r => tm[r.task_id] && im[r.item_id]).map(r => ({task_id: tm[r.task_id], item_id: im[r.item_id], qty: r.qty})));
   await insRows("task_docs", b.task_docs.filter(r => tm[r.task_id] && dm[r.doc_id]).map(r => ({task_id: tm[r.task_id], doc_id: dm[r.doc_id]})));
@@ -679,18 +679,32 @@ function normUrl(u) {
   if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = "https://" + u;
   return /^https?:\/\//i.test(u) ? u : "";
 }
+const unitPrice = o => Number(o.price) / (Number(o.content) > 0 ? Number(o.content) : 1);
 function cheapest(i) {
-  const p = (i.offers || []).filter(o => hasN(o.price));
-  return p.length ? p.reduce((a, b) => Number(a.price) <= Number(b.price) ? a : b) : null;
+  const p = (i.offers || []).filter(o => hasN(o.price) && o.decision !== "skip");
+  return p.length ? p.reduce((a, b) => unitPrice(a) <= unitPrice(b) ? a : b) : null;
 }
 function itemTags(i) {
-  const b = cheapest(i), n = (i.offers || []).length;
-  return `<div>${n ? `<span class="tag ac">${n} Angebot${n > 1 ? 'e' : ''}${b ? ' · ab ' + eur(b.price) : ''}</span>` : ''}${i.disposal ? '<span class="tag">♻ Entsorgungshinweis</span>' : ''}</div>`;
+  const offs = i.offers || [], n = offs.length, taken = offs.find(o => o.decision === "take"), b = cheapest(i);
+  const per = o => Number(o.content) > 0 && Number(o.content) !== 1 ? ` (${eur(unitPrice(o))} je ${esc(i.unit)})` : "";
+  let h = "";
+  if (taken) h += `<div><span class="tag ok">✓ gewählt: ${esc(taken.vendor)} · ${hasN(taken.price) ? eur(taken.price) : ''} ${esc(taken.price_unit)}${per(taken)}</span> <button class="chip" onclick="setDecision(${taken.id},${i.id},'')">zurücksetzen</button></div>`;
+  else if (b) h += `<div><span class="tag ac">💰 günstigster: ${esc(b.vendor)} · ${eur(b.price)} ${esc(b.price_unit)}${per(b)}</span> <button class="chip" onclick="setDecision(${b.id},${i.id},'take')">✓ nehmen</button> <button class="chip" onclick="setDecision(${b.id},${i.id},'skip')">✗ nein</button></div>`;
+  if (n || i.disposal) h += `<div>${n ? `<span class="tag">${n} Angebot${n > 1 ? 'e' : ''}</span>` : ''}${i.disposal ? '<span class="tag">♻ Entsorgungshinweis</span>' : ''}</div>`;
+  return h;
+}
+async function setDecision(offerId, itemId, val) {
+  if (val === "take") await sb.from("item_offers").update({decision: ""}).eq("item_id", itemId).eq("decision", "take");
+  const r = await sb.from("item_offers").update({decision: val}).eq("id", offerId);
+  if (r.error) { alert("Fehler: " + r.error.message + "\n\nHast du update_lager4.sql in Supabase ausgeführt?"); return; }
+  await load();
+  if ($("m-idet").className.includes("on")) renderItemDet(itemId, 0);
+  if ($("m-buy").className.includes("on")) renderBuy();
 }
 function openItem(id) { renderItemDet(id, 0); $("m-idet").className = "modal on"; }
 function renderItemDet(id, offerId) {
   const i = byId(D.items, id); if (!i) return;
-  const offers = [...(i.offers || [])].sort((a, b) => !hasN(a.price) - !hasN(b.price) || Number(a.price) - Number(b.price));
+  const offers = [...(i.offers || [])].sort((a, b) => !hasN(a.price) - !hasN(b.price) || unitPrice(a) - unitPrice(b));
   const best = cheapest(i), o = offerId ? offers.find(x => x.id === offerId) : null;
   const val = v => hasN(v) ? esc(String(v).replace(".", ",")) : "";
   let h = `<h3>${i.kind === 'tool' ? '🔧 ' : ''}${esc(i.name)} ${i.unit ? `<span class="mut">(${esc(i.unit)})</span>` : ''}</h3>
@@ -701,14 +715,15 @@ function renderItemDet(id, offerId) {
   <div class="bar" style="margin-top:6px"><button class="btn" onclick="saveDisposal(${id})">Hinweis speichern</button></div>
   <div class="sec2">Angebote und Anbieter</div>`;
   if (!offers.length) h += `<p class="mut">Noch keine Angebote.</p>`;
-  h += offers.map(x => `<div class="card"><div class="row"><div class="grow"><b>${esc(x.vendor)}</b>
+  h += offers.map(x => `<div class="card" style="${x.decision === 'skip' ? 'opacity:.55;' : ''}${x.decision === 'take' ? 'border-color:var(--ok);border-width:2px;' : ''}"><div class="row"><div class="grow"><b>${esc(x.vendor)}</b>${x.decision === 'take' ? ' <span class="tag ok">✓ nehme ich</span>' : ''}${x.decision === 'skip' ? ' <span class="tag bad">✗ nehme ich nicht</span>' : ''}
     ${best && x.id === best.id && offers.length > 1 ? '<span class="tag ok">günstigster</span>' : ''}
     ${x.product ? `<div class="offer">${esc(x.product)}</div>` : ''}
     <div>${hasN(x.price) ? `<b>${eur(x.price)}</b>` : '<span class="mut">kein Preis</span>'} ${esc(x.price_unit)}
-    ${hasN(x.content) && Number(x.content) !== 1 ? ` · Inhalt ${fmt(x.content)} ${esc(i.unit)}` : ''}
+    ${hasN(x.content) && hasN(x.price) && Number(x.content) !== 1 ? ` · Inhalt ${fmt(x.content)} ${esc(i.unit)} (${eur(unitPrice(x))} je ${esc(i.unit)})` : ''}
     ${x.link ? ` · <a href="${esc(x.link)}" target="_blank" rel="noopener">Link</a>` : ''}</div>
     <div class="mut">Versand: ${hasN(x.shipping) ? eur(x.shipping) : 'nicht angegeben'}${hasN(x.free_from) ? ' · gratis ab ' + eur(x.free_from) : ''}</div>
-    ${x.note ? `<div class="mut offer">${esc(x.note)}</div>` : ''}</div>
+    ${x.note ? `<div class="mut offer">${esc(x.note)}</div>` : ''}
+    <div class="bar" style="margin:8px 0 0"><button class="chip ${x.decision === 'take' ? 'on' : ''}" onclick="setDecision(${x.id},${id},'${x.decision === 'take' ? '' : 'take'}')">✓ Nehme ich</button><button class="chip ${x.decision === 'skip' ? 'on' : ''}" onclick="setDecision(${x.id},${id},'${x.decision === 'skip' ? '' : 'skip'}')">✗ Nehme ich nicht</button></div></div>
     <div><button class="btn sec" onclick="renderItemDet(${id},${x.id})">✎</button> <button class="btn dng" onclick="delOffer(${x.id},${id})">✕</button></div></div></div>`).join("");
   h += `<div class="sec2">${o ? 'Angebot bearbeiten' : 'Angebot hinzufügen'}</div>
   <label>Anbieter</label><input id="o-vendor" value="${esc(o ? o.vendor : '')}" placeholder="z. B. Raiffeisen">
@@ -789,7 +804,7 @@ function buyData() {
   const all = needs.map(n => (n.item.offers || []).filter(o => hasN(o.price)));
   const vendorNames = {};
   all.flat().forEach(o => { if (!vendorNames[vkey(o.vendor)]) vendorNames[vkey(o.vendor)] = o.vendor; });
-  const opts = all.map(os => os.filter(o => !BUYX.has(vkey(o.vendor))));
+  const opts = all.map(os => { const f = os.filter(o => !BUYX.has(vkey(o.vendor)) && o.decision !== "skip"); const t = f.filter(o => o.decision === "take"); return t.length ? t : f; });
   const noOffer = needs.filter((n, k) => !opts[k].length);
   const idxOf = needs.map((n, k) => k).filter(k => opts[k].length);
   const N = idxOf.map(k => needs[k]), O = idxOf.map(k => opts[k]);
@@ -821,15 +836,15 @@ function buyData() {
   singles.sort((a, b) => a.total - b.total);
   return {needs, noOffer, plan, cheapGoods, singles, vendorNames};
 }
-function buyHtml(d) {
+function buyHtml(d, inter = true) {
   if (!d.needs.length) return `<p class="mut">Nichts fehlt: Kein Artikel hat einen negativen Saldo.</p>`;
   let h = "";
   if (d.plan) {
     for (const e of Object.values(d.plan.vendors).sort((a, b) => a.name.localeCompare(b.name))) {
-      h += `<h3>${esc(e.name)}</h3><table class="t"><tr><th>Artikel</th><th>Fehlt</th><th>Kauf</th><th>Summe</th><th>Rest</th></tr>
+      h += `<h3>${esc(e.name)}</h3><table class="t"><tr><th>Artikel</th><th>Fehlt</th><th>Kauf</th><th>Summe</th><th>Rest</th>${inter ? '<th>Verkäufer?</th>' : ''}</tr>
       ${e.lines.map(l => `<tr><td>${esc(l.item.name)}${hasN(l.offer.product) && l.offer.product ? `<div class="mut offer">${esc(l.offer.product)}</div>` : ''}</td><td>${fmt(l.need)} ${esc(l.item.unit)}</td>
-      <td>${l.packs} × ${eur(l.offer.price)} ${esc(l.offer.price_unit)}</td><td>${eur(l.goods)}</td>
-      <td>${l.left > 0 ? fmt(l.left) + ' ' + esc(l.item.unit) + (l.item.disposal ? `<div class="mut">♻ ${esc(l.item.disposal)}</div>` : '') : '–'}</td></tr>`).join("")}</table>
+      <td>${l.packs} × ${eur(l.offer.price)} ${esc(l.offer.price_unit)}${l.offer.decision === 'take' ? ' <span class="tag ok">✓ gewählt</span>' : ''}</td><td>${eur(l.goods)}</td>
+      <td>${l.left > 0 ? fmt(l.left) + ' ' + esc(l.item.unit) + (l.item.disposal ? `<div class="mut">♻ ${esc(l.item.disposal)}</div>` : '') : '–'}</td>${inter ? `<td><button class="chip" onclick="setDecision(${l.offer.id},${l.item.id},'${l.offer.decision === 'take' ? '' : 'take'}')">${l.offer.decision === 'take' ? '✓ gewählt' : '✓ nehmen'}</button> <button class="chip" onclick="setDecision(${l.offer.id},${l.item.id},'skip')">✗ nein</button></td>` : ''}</tr>`).join("")}</table>
       <div>Warenwert <b>${eur(e.goods)}</b> · Versand <b>${eur(e.ship)}</b>${e.shipBy ? ` <span class="mut">(höchster Versand: ${esc(e.shipBy.item.name)}${hasN(e.shipBy.offer.free_from) && e.ship > 0 ? ', gratis ab ' + eur(e.shipBy.offer.free_from) : ''})</span>` : e.goods > 0 ? ' <span class="mut">(frei oder nicht angegeben)</span>' : ''} · Summe <b>${eur(e.sum)}</b></div>`;
     }
     h += `<h3>Gesamt: ${eur(d.plan.total)}</h3><div class="mut">Davon Ware ${eur(d.plan.goods)}, Versand ${eur(d.plan.ship)}.</div>`;
@@ -866,7 +881,7 @@ function printBuy() {
   table.t{width:100%;border-collapse:collapse;margin:4px 0} table.t td,table.t th{border:1px solid #777;padding:4px 6px;font-size:10pt;text-align:left;vertical-align:top} table.t th{background:#eee}
   .mut{color:#333;font-size:9.5pt} .offer{white-space:pre-wrap} .bar{padding:10px;background:#f1f1f1;margin-bottom:10px} @media print{.noprint{display:none} body{padding:0}}
   </style></head><body><div class="noprint bar"><button onclick="window.print()" style="font-size:15px;padding:8px 14px">🖨 Drucken / Als PDF speichern</button></div>
-  <h1>Einkaufsvergleich</h1><div class="mut">erstellt am ${today()}</div>${buyHtml(buyData())}</body></html>`);
+  <h1>Einkaufsvergleich</h1><div class="mut">erstellt am ${today()}</div>${buyHtml(buyData(), false)}</body></html>`);
   w.document.close();
 }
 
@@ -919,7 +934,7 @@ function buildPrintHtml(tasks, o) {
   const offerRows = it => [...(it.offers || [])].sort((a, b) => !hasN(a.price) - !hasN(b.price) || Number(a.price) - Number(b.price));
   const offerTable = items => {
     const rows = [];
-    items.forEach(it => offerRows(it).forEach((x, n) => rows.push(`<tr><td>${n ? '' : esc(it.name)}</td><td>${esc(x.vendor)}</td><td class="pre">${esc(x.product)}</td><td>${hasN(x.price) ? eur(x.price) : ''} ${esc(x.price_unit)}</td><td>${hasN(x.shipping) ? eur(x.shipping) : ''}${hasN(x.free_from) ? '<br>gratis ab ' + eur(x.free_from) : ''}</td><td class="url">${esc(x.link)}</td></tr>`)));
+    items.forEach(it => offerRows(it).forEach((x, n) => rows.push(`<tr><td>${n ? '' : esc(it.name)}</td><td>${x.decision === 'take' ? '✓ ' : x.decision === 'skip' ? '✗ ' : ''}${esc(x.vendor)}</td><td class="pre">${esc(x.product)}</td><td>${hasN(x.price) ? eur(x.price) : ''} ${esc(x.price_unit)}</td><td>${hasN(x.shipping) ? eur(x.shipping) : ''}${hasN(x.free_from) ? '<br>gratis ab ' + eur(x.free_from) : ''}</td><td class="url">${esc(x.link)}</td></tr>`)));
     return rows.length ? `<h2>Anbieter und Preise</h2><table><tr><th>Artikel</th><th>Anbieter</th><th>Produkt</th><th>Preis</th><th>Versand</th><th>Link</th></tr>${rows.join("")}</table>` : "";
   };
   let body = "";
